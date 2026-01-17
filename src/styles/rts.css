@@ -666,6 +666,35 @@ body {
   height: 100%;
 }
 
+/* Factorio Context Menu */
+.factorio-context-menu {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  z-index: 1000;
+  min-width: 150px;
+  padding: 4px 0;
+}
+
+.factorio-context-menu__item {
+  display: block;
+  width: 100%;
+  padding: 8px 16px;
+  background: none;
+  border: none;
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.factorio-context-menu__item:hover {
+  background: var(--bg-tertiary);
+}
+
 /* Scrollbar */
 ::-webkit-scrollbar {
   width: 8px;

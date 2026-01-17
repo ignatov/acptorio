@@ -5,9 +5,11 @@ mod filesystem;
 mod state;
 
 use commands::{
-    get_agent, get_fog_state, get_metrics, get_project_path, get_project_tree, is_file_explored,
-    list_agents, read_file, reset_metrics, respond_to_permission, reveal_file, scan_project,
-    send_prompt, spawn_agent, stop_agent, stop_all_agents,
+    add_factory_project, get_agent, get_factory_layout, get_fog_state, get_metrics,
+    get_project_path, get_project_tree, is_file_explored, list_agents, move_factory_project,
+    read_file, remove_agent_placement, remove_factory_project, reset_metrics,
+    respond_to_permission, reveal_file, save_factory_layout, scan_project, send_prompt,
+    set_agent_placement, set_factory_viewport, spawn_agent, stop_agent, stop_all_agents,
 };
 use state::AppState;
 use std::sync::Arc;
@@ -40,6 +42,15 @@ pub fn run() {
             // Metrics commands
             get_metrics,
             reset_metrics,
+            // Factory commands
+            get_factory_layout,
+            save_factory_layout,
+            add_factory_project,
+            remove_factory_project,
+            move_factory_project,
+            set_agent_placement,
+            remove_agent_placement,
+            set_factory_viewport,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

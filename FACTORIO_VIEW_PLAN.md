@@ -508,6 +508,84 @@ src/assets/factorio/            # All sprite assets (see Phase 4)
 
 ---
 
+## Phase 8: Persistence & Project Management (NEW)
+
+### 8.1 Factory Store
+**File**: `src/stores/factoryStore.ts`
+
+Dedicated store for persistent factory map state:
+
+```typescript
+interface ProjectNode {
+  id: string;
+  path: string;
+  name: string;
+  gridX: number;
+  gridY: number;
+}
+
+interface AgentPlacement {
+  agentId: string;
+  gridX: number;
+  gridY: number;
+  connectedProjectId: string | null;
+}
+
+interface FactoryState {
+  projects: Map<string, ProjectNode>;
+  agentPlacements: Map<string, AgentPlacement>;
+
+  // Actions
+  addProject: (path: string, gridX?: number, gridY?: number) => void;
+  removeProject: (id: string) => void;
+  moveProject: (id: string, gridX: number, gridY: number) => void;
+
+  setAgentPlacement: (agentId: string, gridX: number, gridY: number) => void;
+  connectAgentToProject: (agentId: string, projectId: string) => void;
+  removeAgentPlacement: (agentId: string) => void;
+
+  // Persistence
+  saveToStorage: () => void;
+  loadFromStorage: () => void;
+}
+```
+
+### 8.2 Persistence Strategy
+
+**Storage location**: `~/.agent-commander/factory-layout.json` (via Tauri fs API)
+
+```json
+{
+  "version": 1,
+  "projects": [
+    { "id": "proj-1", "path": "/Users/x/project", "name": "project", "gridX": 0, "gridY": 0 }
+  ],
+  "agentPlacements": [
+    { "agentId": "agent-1", "gridX": 4, "gridY": 0, "connectedProjectId": "proj-1" }
+  ],
+  "viewport": { "offsetX": 0, "offsetY": 0, "zoom": 1 }
+}
+```
+
+### 8.3 Add Project UI
+- Right-click on empty canvas → "Add Project" → folder picker
+- Or drag folder from system onto canvas
+- Projects persist across sessions
+
+### 8.4 Agent Deployment Flow
+1. User clicks "Deploy Agent"
+2. If projects exist on map → prompt to select which project
+3. Agent appears on canvas near selected project
+4. Agent's `working_directory` set to project path
+5. Position persisted in factoryStore
+
+### 8.5 Auto-Save
+- Save on every position change (debounced)
+- Save on project add/remove
+- Load on app startup
+
+---
+
 ## Questions Resolved
 
 | Question | Answer |

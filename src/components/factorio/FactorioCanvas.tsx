@@ -1,15 +1,34 @@
 import { useRef, useEffect, useCallback, useState } from "react";
+import { open } from "@tauri-apps/plugin-dialog";
 import { useUIStore } from "../../stores/uiStore";
 import { useAgentStore } from "../../stores/agentStore";
+import { useFactoryStore } from "../../stores/factoryStore";
 import { FactorioRenderer, type Entity, type AgentEntity, type ResourceEntity } from "./FactorioRenderer";
+import { screenToWorld, snapToGrid, TILE_SIZE } from "./grid";
+
+interface ContextMenu {
+  x: number;
+  y: number;
+  worldX: number;
+  worldY: number;
+}
+
+interface DragState {
+  entityId: string;
+  entityType: "agent" | "resource";
+  startGridX: number;
+  startGridY: number;
+}
 
 export function FactorioCanvas() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<FactorioRenderer | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const [isDragging, setIsDragging] = useState(false);
-  const [dragStart, setDragStart] = useState<{ x: number; y: number } | null>(null);
+  const [isPanning, setIsPanning] = useState(false);
+  const [panStart, setPanStart] = useState<{ x: number; y: number } | null>(null);
+  const [contextMenu, setContextMenu] = useState<ContextMenu | null>(null);
+  const [dragState, setDragState] = useState<DragState | null>(null);
 
   const viewport = useUIStore((s) => s.factorioViewport);
   const panCanvas = useUIStore((s) => s.panFactorioCanvas);
@@ -19,6 +38,23 @@ export function FactorioCanvas() {
   const selectedAgentIds = useAgentStore((s) => s.selectedAgentIds);
   const selectAgent = useAgentStore((s) => s.selectAgent);
   const clearSelection = useAgentStore((s) => s.clearSelection);
+
+  const projects = useFactoryStore((s) => s.projects);
+  const agentPlacements = useFactoryStore((s) => s.agentPlacements);
+  const isLoaded = useFactoryStore((s) => s.isLoaded);
+  const loadFromBackend = useFactoryStore((s) => s.loadFromBackend);
+  const addProject = useFactoryStore((s) => s.addProject);
+  const moveProject = useFactoryStore((s) => s.moveProject);
+  const setAgentPlacement = useFactoryStore((s) => s.setAgentPlacement);
+  const getAgentPlacement = useFactoryStore((s) => s.getAgentPlacement);
+  const findNextAvailablePosition = useFactoryStore((s) => s.findNextAvailablePosition);
+
+  // Load factory state on mount
+  useEffect(() => {
+    if (!isLoaded) {
+      loadFromBackend();
+    }
+  }, [isLoaded, loadFromBackend]);
 
   // Initialize renderer
   useEffect(() => {
@@ -51,70 +87,84 @@ export function FactorioCanvas() {
     }
   }, [viewport]);
 
-  // Update renderer with entities
+  // Update renderer with entities from factory store
   useEffect(() => {
     const renderer = rendererRef.current;
-    if (!renderer) return;
+    if (!renderer || !isLoaded) return;
 
     const entities: Entity[] = [];
 
-    // Create resource nodes from unique working directories
-    const workingDirs = new Set<string>();
-    agents.forEach((agent) => {
-      if (agent.working_directory) {
-        workingDirs.add(agent.working_directory);
-      }
-    });
-
-    let resourceIndex = 0;
-    const dirToPosition = new Map<string, { x: number; y: number }>();
-
-    workingDirs.forEach((dir) => {
-      const gridX = -4; // Resources on the left
-      const gridY = resourceIndex * 4;
-      dirToPosition.set(dir, { x: gridX, y: gridY });
-
-      const name = dir.split("/").pop() || dir;
+    // Add project nodes from factory store
+    projects.forEach((project) => {
       const resourceEntity: ResourceEntity = {
-        id: `resource-${dir}`,
+        id: project.id,
         type: "resource",
-        gridX,
-        gridY,
+        gridX: project.grid_x,
+        gridY: project.grid_y,
         width: 2,
         height: 2,
-        path: dir,
-        name,
+        path: project.path,
+        name: project.name,
       };
       entities.push(resourceEntity);
-      resourceIndex++;
     });
 
-    // Create agent machines
-    let agentIndex = 0;
+    // Add agent machines with positions from factory store
     agents.forEach((agent) => {
-      const gridX = 3; // Agents on the right
-      const gridY = agentIndex * 4;
+      let placement = getAgentPlacement(agent.id);
+
+      // If no placement exists, create one
+      if (!placement) {
+        const pos = findNextAvailablePosition();
+        setAgentPlacement(agent.id, pos.x, pos.y);
+        placement = { agent_id: agent.id, grid_x: pos.x, grid_y: pos.y, connected_project_id: null };
+      }
 
       const agentEntity: AgentEntity = {
         id: agent.id,
         type: "agent",
-        gridX,
-        gridY,
+        gridX: placement.grid_x,
+        gridY: placement.grid_y,
         width: 2,
         height: 2,
         agent,
       };
       entities.push(agentEntity);
-      agentIndex++;
     });
 
     renderer.setEntities(entities);
     renderer.setSelectedIds(selectedAgentIds);
-  }, [agents, selectedAgentIds]);
+  }, [agents, selectedAgentIds, projects, agentPlacements, isLoaded, getAgentPlacement, findNextAvailablePosition, setAgentPlacement]);
+
+  // Handle adding a project via dialog
+  const handleAddProject = useCallback(async (worldX: number, worldY: number) => {
+    setContextMenu(null);
+
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: "Select Project Folder",
+      });
+
+      if (selected && typeof selected === "string") {
+        const snapped = snapToGrid(worldX, worldY);
+        addProject(selected, snapped.x / TILE_SIZE, snapped.y / TILE_SIZE);
+      }
+    } catch (error) {
+      console.error("Failed to open folder dialog:", error);
+    }
+  }, [addProject]);
 
   // Mouse handlers
   const handleMouseDown = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
+      // Close context menu on any click
+      if (contextMenu) {
+        setContextMenu(null);
+        return;
+      }
+
       const canvas = canvasRef.current;
       const renderer = rendererRef.current;
       if (!canvas || !renderer) return;
@@ -126,50 +176,120 @@ export function FactorioCanvas() {
       // Check if clicking on an entity
       const entity = renderer.getEntityAtScreen(x, y);
 
-      if (entity && entity.type === "agent") {
-        // Select the agent
-        const multiSelect = e.ctrlKey || e.metaKey;
-        selectAgent(entity.id, multiSelect);
-      } else if (!entity) {
-        // Start panning or clear selection
-        if (!e.ctrlKey && !e.metaKey) {
-          clearSelection();
+      if (e.button === 0) { // Left click
+        if (entity) {
+          if (entity.type === "agent") {
+            const multiSelect = e.ctrlKey || e.metaKey;
+            selectAgent(entity.id, multiSelect);
+          }
+          // Start dragging the entity
+          setDragState({
+            entityId: entity.id,
+            entityType: entity.type,
+            startGridX: entity.gridX,
+            startGridY: entity.gridY,
+          });
+        } else {
+          // Start panning
+          if (!e.ctrlKey && !e.metaKey) {
+            clearSelection();
+          }
+          setIsPanning(true);
+          setPanStart({ x: e.clientX, y: e.clientY });
         }
-        setIsDragging(true);
-        setDragStart({ x: e.clientX, y: e.clientY });
       }
     },
-    [selectAgent, clearSelection]
+    [selectAgent, clearSelection, contextMenu]
   );
 
   const handleMouseMove = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
       const renderer = rendererRef.current;
+      const canvas = canvasRef.current;
 
-      if (isDragging && dragStart) {
-        const deltaX = e.clientX - dragStart.x;
-        const deltaY = e.clientY - dragStart.y;
+      if (isPanning && panStart) {
+        const deltaX = e.clientX - panStart.x;
+        const deltaY = e.clientY - panStart.y;
         panCanvas(deltaX, deltaY);
-        setDragStart({ x: e.clientX, y: e.clientY });
-      } else if (renderer) {
-        // Update hover state
-        const canvas = canvasRef.current;
-        if (canvas) {
-          const rect = canvas.getBoundingClientRect();
-          const x = e.clientX - rect.left;
-          const y = e.clientY - rect.top;
-          const entity = renderer.getEntityAtScreen(x, y);
-          renderer.setHoveredId(entity?.id ?? null);
+        setPanStart({ x: e.clientX, y: e.clientY });
+      } else if (dragState && canvas) {
+        // Update entity position while dragging (visual only)
+        const rect = canvas.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        const world = screenToWorld(x, y, viewport);
+        const snapped = snapToGrid(world.x, world.y);
+
+        // Update renderer with preview position
+        if (renderer) {
+          renderer.setDragPreview(dragState.entityId, snapped.x / TILE_SIZE, snapped.y / TILE_SIZE);
         }
+      } else if (renderer && canvas) {
+        // Update hover state
+        const rect = canvas.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        const entity = renderer.getEntityAtScreen(x, y);
+        renderer.setHoveredId(entity?.id ?? null);
       }
     },
-    [isDragging, dragStart, panCanvas]
+    [isPanning, panStart, panCanvas, dragState, viewport]
   );
 
-  const handleMouseUp = useCallback(() => {
-    setIsDragging(false);
-    setDragStart(null);
-  }, []);
+  const handleMouseUp = useCallback(
+    (e: React.MouseEvent<HTMLCanvasElement>) => {
+      const canvas = canvasRef.current;
+      const renderer = rendererRef.current;
+
+      if (dragState && canvas) {
+        const rect = canvas.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        const world = screenToWorld(x, y, viewport);
+        const snapped = snapToGrid(world.x, world.y);
+        const newGridX = snapped.x / TILE_SIZE;
+        const newGridY = snapped.y / TILE_SIZE;
+
+        // Save the new position
+        if (dragState.entityType === "agent") {
+          setAgentPlacement(dragState.entityId, newGridX, newGridY);
+        } else if (dragState.entityType === "resource") {
+          moveProject(dragState.entityId, newGridX, newGridY);
+        }
+
+        if (renderer) {
+          renderer.clearDragPreview();
+        }
+      }
+
+      setIsPanning(false);
+      setPanStart(null);
+      setDragState(null);
+    },
+    [dragState, viewport, setAgentPlacement, moveProject]
+  );
+
+  const handleContextMenu = useCallback(
+    (e: React.MouseEvent<HTMLCanvasElement>) => {
+      e.preventDefault();
+
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      const world = screenToWorld(x, y, viewport);
+
+      setContextMenu({
+        x: e.clientX,
+        y: e.clientY,
+        worldX: world.x,
+        worldY: world.y,
+      });
+    },
+    [viewport]
+  );
 
   const handleWheel = useCallback(
     (e: React.WheelEvent<HTMLCanvasElement>) => {
@@ -186,12 +306,18 @@ export function FactorioCanvas() {
     [zoomCanvas]
   );
 
+  const getCursor = () => {
+    if (dragState) return "grabbing";
+    if (isPanning) return "grabbing";
+    return "grab";
+  };
+
   return (
     <div ref={containerRef} className="factorio-canvas">
       <div className="factorio-canvas__header">
         <span>FACTORY VIEW</span>
         <span className="factorio-canvas__stats">
-          {agents.size} agents | {selectedAgentIds.size} selected
+          {projects.size} projects | {agents.size} agents | {selectedAgentIds.size} selected
         </span>
       </div>
       <div className="factorio-canvas__content">
@@ -201,9 +327,29 @@ export function FactorioCanvas() {
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
           onMouseLeave={handleMouseUp}
+          onContextMenu={handleContextMenu}
           onWheel={handleWheel}
-          style={{ width: "100%", height: "100%", cursor: isDragging ? "grabbing" : "grab" }}
+          style={{ width: "100%", height: "100%", cursor: getCursor() }}
         />
+
+        {/* Context Menu */}
+        {contextMenu && (
+          <div
+            className="factorio-context-menu"
+            style={{
+              position: "fixed",
+              left: contextMenu.x,
+              top: contextMenu.y,
+            }}
+          >
+            <button
+              className="factorio-context-menu__item"
+              onClick={() => handleAddProject(contextMenu.worldX, contextMenu.worldY)}
+            >
+              Add Project
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -56,6 +56,7 @@ export class FactorioRenderer {
   private entities: Map<string, Entity> = new Map();
   private selectedIds: Set<string> = new Set();
   private hoveredId: string | null = null;
+  private dragPreview: { entityId: string; gridX: number; gridY: number } | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -105,6 +106,14 @@ export class FactorioRenderer {
     this.hoveredId = id;
   }
 
+  setDragPreview(entityId: string, gridX: number, gridY: number): void {
+    this.dragPreview = { entityId, gridX, gridY };
+  }
+
+  clearDragPreview(): void {
+    this.dragPreview = null;
+  }
+
   getEntityAtScreen(screenX: number, screenY: number): Entity | null {
     const world = screenToWorld(screenX, screenY, this.viewport);
 
@@ -146,17 +155,24 @@ export class FactorioRenderer {
     // Draw grid
     this.drawGrid(width, height);
 
-    // Draw entities
+    // Draw entities (with drag preview support)
     for (const entity of this.entities.values()) {
       if (entity.type === "resource") {
-        this.drawResourceNode(entity);
+        const pos = this.getEntityRenderPosition(entity);
+        this.drawResourceNode(entity, pos.gridX, pos.gridY);
       }
     }
 
     for (const entity of this.entities.values()) {
       if (entity.type === "agent") {
-        this.drawAgentMachine(entity);
+        const pos = this.getEntityRenderPosition(entity);
+        this.drawAgentMachine(entity, pos.gridX, pos.gridY);
       }
+    }
+
+    // Draw drag ghost
+    if (this.dragPreview) {
+      this.drawDragGhost();
     }
 
     // Draw viewport info (debug)
@@ -192,9 +208,39 @@ export class FactorioRenderer {
     }
   }
 
-  private drawAgentMachine(entity: AgentEntity): void {
+  private getEntityRenderPosition(entity: Entity): { gridX: number; gridY: number } {
+    if (this.dragPreview && this.dragPreview.entityId === entity.id) {
+      return { gridX: this.dragPreview.gridX, gridY: this.dragPreview.gridY };
+    }
+    return { gridX: entity.gridX, gridY: entity.gridY };
+  }
+
+  private drawDragGhost(): void {
+    if (!this.dragPreview) return;
+
+    const { ctx, viewport } = this;
+    const entity = this.entities.get(this.dragPreview.entityId);
+    if (!entity) return;
+
+    const screenPos = worldToScreen(
+      this.dragPreview.gridX * TILE_SIZE,
+      this.dragPreview.gridY * TILE_SIZE,
+      viewport
+    );
+    const screenWidth = entity.width * TILE_SIZE * viewport.zoom;
+    const screenHeight = entity.height * TILE_SIZE * viewport.zoom;
+
+    // Draw ghost outline
+    ctx.strokeStyle = "rgba(0, 255, 136, 0.8)";
+    ctx.lineWidth = 2;
+    ctx.setLineDash([5, 5]);
+    ctx.strokeRect(screenPos.x, screenPos.y, screenWidth, screenHeight);
+    ctx.setLineDash([]);
+  }
+
+  private drawAgentMachine(entity: AgentEntity, gridX: number, gridY: number): void {
     const { ctx, viewport, selectedIds, hoveredId, animationTime } = this;
-    const { agent, gridX, gridY, width, height } = entity;
+    const { agent, width, height } = entity;
 
     const screenPos = worldToScreen(gridX * TILE_SIZE, gridY * TILE_SIZE, viewport);
     const screenWidth = width * TILE_SIZE * viewport.zoom;
@@ -311,9 +357,9 @@ export class FactorioRenderer {
     }
   }
 
-  private drawResourceNode(entity: ResourceEntity): void {
+  private drawResourceNode(entity: ResourceEntity, gridX: number, gridY: number): void {
     const { ctx, viewport } = this;
-    const { gridX, gridY, width, height, name } = entity;
+    const { width, height, name } = entity;
 
     const screenPos = worldToScreen(gridX * TILE_SIZE, gridY * TILE_SIZE, viewport);
     const screenWidth = width * TILE_SIZE * viewport.zoom;
