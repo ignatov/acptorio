@@ -2,6 +2,12 @@ import { create } from "zustand";
 
 type Panel = "minimap" | "mainview" | "command" | "units";
 
+export interface FactorioViewport {
+  offsetX: number;
+  offsetY: number;
+  zoom: number;
+}
+
 interface UIState {
   // Panel visibility
   panelVisibility: Record<Panel, boolean>;
@@ -24,6 +30,9 @@ interface UIState {
   activeModal: string | null;
   modalData: Record<string, unknown> | null;
 
+  // Factorio Canvas
+  factorioViewport: FactorioViewport;
+
   // Actions
   togglePanel: (panel: Panel) => void;
   setCommandInput: (input: string) => void;
@@ -36,6 +45,12 @@ interface UIState {
   endBoxSelect: () => void;
   openModal: (modalId: string, data?: Record<string, unknown>) => void;
   closeModal: () => void;
+
+  // Factorio viewport actions
+  setFactorioViewport: (viewport: Partial<FactorioViewport>) => void;
+  panFactorioCanvas: (deltaX: number, deltaY: number) => void;
+  zoomFactorioCanvas: (delta: number, centerX: number, centerY: number) => void;
+  resetFactorioViewport: () => void;
 }
 
 export const useUIStore = create<UIState>((set) => ({
@@ -59,6 +74,12 @@ export const useUIStore = create<UIState>((set) => ({
 
   activeModal: null,
   modalData: null,
+
+  factorioViewport: {
+    offsetX: 0,
+    offsetY: 0,
+    zoom: 1,
+  },
 
   togglePanel: (panel) => {
     set((state) => ({
@@ -135,5 +156,52 @@ export const useUIStore = create<UIState>((set) => ({
 
   closeModal: () => {
     set({ activeModal: null, modalData: null });
+  },
+
+  setFactorioViewport: (viewport) => {
+    set((state) => ({
+      factorioViewport: { ...state.factorioViewport, ...viewport },
+    }));
+  },
+
+  panFactorioCanvas: (deltaX, deltaY) => {
+    set((state) => ({
+      factorioViewport: {
+        ...state.factorioViewport,
+        offsetX: state.factorioViewport.offsetX - deltaX / state.factorioViewport.zoom,
+        offsetY: state.factorioViewport.offsetY - deltaY / state.factorioViewport.zoom,
+      },
+    }));
+  },
+
+  zoomFactorioCanvas: (delta, centerX, centerY) => {
+    set((state) => {
+      const oldZoom = state.factorioViewport.zoom;
+      const newZoom = Math.max(0.25, Math.min(2, oldZoom * (1 - delta * 0.001)));
+
+      // Zoom towards cursor position
+      const worldX = centerX / oldZoom + state.factorioViewport.offsetX;
+      const worldY = centerY / oldZoom + state.factorioViewport.offsetY;
+      const newOffsetX = worldX - centerX / newZoom;
+      const newOffsetY = worldY - centerY / newZoom;
+
+      return {
+        factorioViewport: {
+          offsetX: newOffsetX,
+          offsetY: newOffsetY,
+          zoom: newZoom,
+        },
+      };
+    });
+  },
+
+  resetFactorioViewport: () => {
+    set({
+      factorioViewport: {
+        offsetX: 0,
+        offsetY: 0,
+        zoom: 1,
+      },
+    });
   },
 }));

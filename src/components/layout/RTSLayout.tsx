@@ -2,7 +2,7 @@ import { ResourceBar } from "../resources/ResourceBar";
 import { Minimap } from "../minimap/Minimap";
 import { MainView } from "../mainview/MainView";
 import { CommandPanel } from "../command/CommandPanel";
-import { UnitPortraits } from "../units/UnitPortraits";
+import { FactorioCanvas } from "../factorio";
 import { SelectionBox } from "./SelectionBox";
 import { useSelection } from "../../hooks";
 
@@ -24,7 +24,7 @@ export function RTSLayout() {
       <Minimap />
       <MainView />
       <CommandPanel />
-      <UnitPortraits />
+      <FactorioCanvas />
 
       {selectionBox && (
         <SelectionBox
