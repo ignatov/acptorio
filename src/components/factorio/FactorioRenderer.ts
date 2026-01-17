@@ -6,6 +6,7 @@ import {
   type Viewport,
 } from "./grid";
 import type { AgentInfo } from "../../types";
+import { getSpriteManager, getAnimationFrame, type SpriteManager } from "./sprites";
 
 // Colors matching the app theme
 const COLORS = {
@@ -58,11 +59,31 @@ export class FactorioRenderer {
   private hoveredId: string | null = null;
   private dragPreview: { entityId: string; gridX: number; gridY: number } | null = null;
 
+  private spriteManager: SpriteManager | null = null;
+  private spritesLoading: boolean = false;
+
+  // Connections: agentId -> projectId
+  private connections: Map<string, string> = new Map();
+
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
     const ctx = canvas.getContext("2d");
     if (!ctx) throw new Error("Could not get canvas context");
     this.ctx = ctx;
+
+    // Load sprites asynchronously
+    this.loadSprites();
+  }
+
+  private async loadSprites(): Promise<void> {
+    if (this.spritesLoading) return;
+    this.spritesLoading = true;
+
+    try {
+      this.spriteManager = await getSpriteManager(TILE_SIZE);
+    } catch (error) {
+      console.error("Failed to load sprites:", error);
+    }
   }
 
   start(): void {
@@ -104,6 +125,10 @@ export class FactorioRenderer {
 
   setHoveredId(id: string | null): void {
     this.hoveredId = id;
+  }
+
+  setConnections(connections: Map<string, string>): void {
+    this.connections = connections;
   }
 
   setDragPreview(entityId: string, gridX: number, gridY: number): void {
@@ -154,6 +179,9 @@ export class FactorioRenderer {
 
     // Draw grid
     this.drawGrid(width, height);
+
+    // Draw conveyor belts (before entities so they appear behind)
+    this.drawConveyorBelts();
 
     // Draw entities (with drag preview support)
     for (const entity of this.entities.values()) {
@@ -239,7 +267,7 @@ export class FactorioRenderer {
   }
 
   private drawAgentMachine(entity: AgentEntity, gridX: number, gridY: number): void {
-    const { ctx, viewport, selectedIds, hoveredId, animationTime } = this;
+    const { ctx, viewport, selectedIds, hoveredId, animationTime, spriteManager } = this;
     const { agent, width, height } = entity;
 
     const screenPos = worldToScreen(gridX * TILE_SIZE, gridY * TILE_SIZE, viewport);
@@ -250,57 +278,107 @@ export class FactorioRenderer {
     const isHovered = hoveredId === entity.id;
     const hasPendingInput = agent.pending_inputs.length > 0;
 
-    // Machine body
-    let bodyColor = COLORS.machineIdle;
-    let borderColor = COLORS.machineBorder;
+    // Try to use sprite if available
+    const spriteSet = spriteManager?.getSprite("assembler");
+    if (spriteSet) {
+      // Determine which animation to use
+      let animation = spriteSet.idle;
+      if (agent.status === "working" && spriteSet.working) {
+        animation = spriteSet.working;
+      } else if (agent.status === "error" && spriteSet.error) {
+        animation = spriteSet.error;
+      }
 
-    if (agent.status === "working") {
-      bodyColor = this.pulseColor(COLORS.machineIdle, COLORS.machineWorking, animationTime, 500);
-    } else if (agent.status === "error") {
-      bodyColor = COLORS.machineError;
-    } else if (hasPendingInput) {
-      borderColor = this.pulseColor(COLORS.machineBorder, COLORS.machineAttention, animationTime, 800);
+      // Get current frame
+      const frame = getAnimationFrame(animation, animationTime);
+
+      // Draw shadow
+      ctx.fillStyle = "rgba(0,0,0,0.3)";
+      ctx.fillRect(screenPos.x + 4 * viewport.zoom, screenPos.y + 4 * viewport.zoom, screenWidth, screenHeight);
+
+      // Draw sprite
+      ctx.imageSmoothingEnabled = false; // Pixel art should be crisp
+      ctx.drawImage(frame, screenPos.x, screenPos.y, screenWidth, screenHeight);
+
+      // Draw selection/hover border
+      if (isSelected || isHovered) {
+        ctx.strokeStyle = isSelected ? COLORS.machineBorderSelected : COLORS.machineBorder;
+        ctx.lineWidth = isSelected ? 3 : 2;
+        ctx.strokeRect(screenPos.x, screenPos.y, screenWidth, screenHeight);
+      }
+    } else {
+      // Fallback to primitive rendering
+      let bodyColor = COLORS.machineIdle;
+      let borderColor = COLORS.machineBorder;
+
+      if (agent.status === "working") {
+        bodyColor = this.pulseColor(COLORS.machineIdle, COLORS.machineWorking, animationTime, 500);
+      } else if (agent.status === "error") {
+        bodyColor = COLORS.machineError;
+      } else if (hasPendingInput) {
+        borderColor = this.pulseColor(COLORS.machineBorder, COLORS.machineAttention, animationTime, 800);
+      }
+
+      if (isSelected) {
+        borderColor = COLORS.machineBorderSelected;
+      }
+
+      ctx.fillStyle = "rgba(0,0,0,0.3)";
+      ctx.fillRect(screenPos.x + 4, screenPos.y + 4, screenWidth, screenHeight);
+
+      ctx.fillStyle = bodyColor;
+      ctx.fillRect(screenPos.x, screenPos.y, screenWidth, screenHeight);
+
+      ctx.strokeStyle = borderColor;
+      ctx.lineWidth = isSelected || isHovered ? 3 : 2;
+      ctx.strokeRect(screenPos.x, screenPos.y, screenWidth, screenHeight);
+
+      const padding = 8 * viewport.zoom;
+      const innerX = screenPos.x + padding;
+      const innerY = screenPos.y + padding;
+      const innerW = screenWidth - padding * 2;
+      const innerH = screenHeight - padding * 2;
+
+      ctx.fillStyle = "rgba(0,0,0,0.3)";
+      ctx.fillRect(innerX, innerY, innerW, innerH * 0.6);
+
+      const progressBarHeight = 8 * viewport.zoom;
+      const progressBarY = screenPos.y + screenHeight - padding - progressBarHeight;
+      ctx.fillStyle = "rgba(0,0,0,0.5)";
+      ctx.fillRect(innerX, progressBarY, innerW, progressBarHeight);
+
+      const progressWidth = (agent.progress / 100) * innerW;
+      ctx.fillStyle = agent.status === "error" ? COLORS.machineError : COLORS.machineWorking;
+      ctx.fillRect(innerX, progressBarY, progressWidth, progressBarHeight);
+
+      if (agent.status === "working") {
+        const gearSize = 16 * viewport.zoom;
+        const gearX = screenPos.x + screenWidth / 2;
+        const gearY = screenPos.y + innerH * 0.3 + padding;
+        const rotation = (animationTime / 500) % (Math.PI * 2);
+
+        ctx.save();
+        ctx.translate(gearX, gearY);
+        ctx.rotate(rotation);
+
+        ctx.fillStyle = COLORS.machineWorking;
+        ctx.beginPath();
+        for (let i = 0; i < 8; i++) {
+          const angle = (i / 8) * Math.PI * 2;
+          const r = i % 2 === 0 ? gearSize : gearSize * 0.6;
+          const x = Math.cos(angle) * r;
+          const y = Math.sin(angle) * r;
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.restore();
+      }
     }
 
-    if (isSelected) {
-      borderColor = COLORS.machineBorderSelected;
-    }
-
-    // Draw shadow
-    ctx.fillStyle = "rgba(0,0,0,0.3)";
-    ctx.fillRect(screenPos.x + 4, screenPos.y + 4, screenWidth, screenHeight);
-
-    // Draw body
-    ctx.fillStyle = bodyColor;
-    ctx.fillRect(screenPos.x, screenPos.y, screenWidth, screenHeight);
-
-    // Draw border
-    ctx.strokeStyle = borderColor;
-    ctx.lineWidth = isSelected || isHovered ? 3 : 2;
-    ctx.strokeRect(screenPos.x, screenPos.y, screenWidth, screenHeight);
-
-    // Draw inner details (machine look)
-    const padding = 8 * viewport.zoom;
-    const innerX = screenPos.x + padding;
-    const innerY = screenPos.y + padding;
-    const innerW = screenWidth - padding * 2;
-    const innerH = screenHeight - padding * 2;
-
-    // Inner panel
-    ctx.fillStyle = "rgba(0,0,0,0.3)";
-    ctx.fillRect(innerX, innerY, innerW, innerH * 0.6);
-
-    // Progress bar at bottom
-    const progressBarHeight = 8 * viewport.zoom;
-    const progressBarY = screenPos.y + screenHeight - padding - progressBarHeight;
-    ctx.fillStyle = "rgba(0,0,0,0.5)";
-    ctx.fillRect(innerX, progressBarY, innerW, progressBarHeight);
-
-    const progressWidth = (agent.progress / 100) * innerW;
-    ctx.fillStyle = agent.status === "error" ? COLORS.machineError : COLORS.machineWorking;
-    ctx.fillRect(innerX, progressBarY, progressWidth, progressBarHeight);
-
-    // Agent name
+    // Agent name (always draw)
     ctx.fillStyle = COLORS.text;
     ctx.font = `${12 * viewport.zoom}px "JetBrains Mono", monospace`;
     ctx.textAlign = "center";
@@ -310,35 +388,7 @@ export class FactorioRenderer {
       screenPos.y + screenHeight + 16 * viewport.zoom
     );
 
-    // Status indicator (working animation)
-    if (agent.status === "working") {
-      const gearSize = 16 * viewport.zoom;
-      const gearX = screenPos.x + screenWidth / 2;
-      const gearY = screenPos.y + innerH * 0.3 + padding;
-      const rotation = (animationTime / 500) % (Math.PI * 2);
-
-      ctx.save();
-      ctx.translate(gearX, gearY);
-      ctx.rotate(rotation);
-
-      // Simple gear icon
-      ctx.fillStyle = COLORS.machineWorking;
-      ctx.beginPath();
-      for (let i = 0; i < 8; i++) {
-        const angle = (i / 8) * Math.PI * 2;
-        const r = i % 2 === 0 ? gearSize : gearSize * 0.6;
-        const x = Math.cos(angle) * r;
-        const y = Math.sin(angle) * r;
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-      }
-      ctx.closePath();
-      ctx.fill();
-
-      ctx.restore();
-    }
-
-    // Pending input indicator
+    // Pending input indicator (always draw)
     if (hasPendingInput) {
       const badgeSize = 20 * viewport.zoom;
       const badgeX = screenPos.x + screenWidth - badgeSize / 2;
@@ -358,47 +408,62 @@ export class FactorioRenderer {
   }
 
   private drawResourceNode(entity: ResourceEntity, gridX: number, gridY: number): void {
-    const { ctx, viewport } = this;
+    const { ctx, viewport, animationTime, spriteManager } = this;
     const { width, height, name } = entity;
 
     const screenPos = worldToScreen(gridX * TILE_SIZE, gridY * TILE_SIZE, viewport);
     const screenWidth = width * TILE_SIZE * viewport.zoom;
     const screenHeight = height * TILE_SIZE * viewport.zoom;
 
-    // Draw ore patch style
-    const oreColor = COLORS.resourceNode;
-    const borderColor = COLORS.resourceBorder;
+    // Try to use sprite if available
+    const spriteSet = spriteManager?.getSprite("ore");
+    if (spriteSet) {
+      const frame = getAnimationFrame(spriteSet.idle, animationTime);
 
-    // Multiple ore dots pattern
-    ctx.fillStyle = oreColor;
-    const dotSize = 12 * viewport.zoom;
-    const spacing = 20 * viewport.zoom;
+      // Draw sprite
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(frame, screenPos.x, screenPos.y, screenWidth, screenHeight);
 
-    for (let dx = spacing; dx < screenWidth - spacing; dx += spacing) {
-      for (let dy = spacing; dy < screenHeight - spacing; dy += spacing) {
-        const offsetX = (Math.sin(dx * 0.1) * 4) * viewport.zoom;
-        const offsetY = (Math.cos(dy * 0.1) * 4) * viewport.zoom;
+      // Border
+      ctx.strokeStyle = COLORS.resourceBorder;
+      ctx.lineWidth = 2;
+      ctx.setLineDash([5, 5]);
+      ctx.strokeRect(screenPos.x, screenPos.y, screenWidth, screenHeight);
+      ctx.setLineDash([]);
+    } else {
+      // Fallback to primitive rendering
+      const oreColor = COLORS.resourceNode;
+      const borderColor = COLORS.resourceBorder;
 
-        ctx.beginPath();
-        ctx.arc(
-          screenPos.x + dx + offsetX,
-          screenPos.y + dy + offsetY,
-          dotSize * (0.8 + Math.random() * 0.4),
-          0,
-          Math.PI * 2
-        );
-        ctx.fill();
+      ctx.fillStyle = oreColor;
+      const dotSize = 12 * viewport.zoom;
+      const spacing = 20 * viewport.zoom;
+
+      for (let dx = spacing; dx < screenWidth - spacing; dx += spacing) {
+        for (let dy = spacing; dy < screenHeight - spacing; dy += spacing) {
+          const offsetX = (Math.sin(dx * 0.1) * 4) * viewport.zoom;
+          const offsetY = (Math.cos(dy * 0.1) * 4) * viewport.zoom;
+
+          ctx.beginPath();
+          ctx.arc(
+            screenPos.x + dx + offsetX,
+            screenPos.y + dy + offsetY,
+            dotSize * (0.8 + Math.random() * 0.4),
+            0,
+            Math.PI * 2
+          );
+          ctx.fill();
+        }
       }
+
+      ctx.strokeStyle = borderColor;
+      ctx.lineWidth = 2;
+      ctx.setLineDash([5, 5]);
+      ctx.strokeRect(screenPos.x, screenPos.y, screenWidth, screenHeight);
+      ctx.setLineDash([]);
     }
 
-    // Border
-    ctx.strokeStyle = borderColor;
-    ctx.lineWidth = 2;
-    ctx.setLineDash([5, 5]);
-    ctx.strokeRect(screenPos.x, screenPos.y, screenWidth, screenHeight);
-    ctx.setLineDash([]);
-
-    // Label
+    // Label (always draw)
     ctx.fillStyle = COLORS.text;
     ctx.font = `${11 * viewport.zoom}px "JetBrains Mono", monospace`;
     ctx.textAlign = "center";
@@ -420,6 +485,117 @@ export class FactorioRenderer {
       8,
       height - 8
     );
+  }
+
+  private drawConveyorBelts(): void {
+    const { ctx, viewport, entities, connections, animationTime, spriteManager } = this;
+
+    for (const [agentId, projectId] of connections) {
+      const agent = entities.get(agentId);
+      const project = entities.get(projectId);
+
+      if (!agent || !project) continue;
+
+      // Get entity positions (accounting for drag preview)
+      const agentPos = this.getEntityRenderPosition(agent);
+      const projectPos = this.getEntityRenderPosition(project);
+
+      // Calculate center points
+      const agentCenterX = (agentPos.gridX + agent.width / 2) * TILE_SIZE;
+      const agentCenterY = (agentPos.gridY + agent.height / 2) * TILE_SIZE;
+      const projectCenterX = (projectPos.gridX + project.width / 2) * TILE_SIZE;
+      const projectCenterY = (projectPos.gridY + project.height / 2) * TILE_SIZE;
+
+      // Get sprite for belt segments
+      const hBeltSprite = spriteManager?.getSprite("belt-h");
+      const vBeltSprite = spriteManager?.getSprite("belt-v");
+
+      // Calculate path (L-shaped: horizontal then vertical)
+      const midX = projectCenterX;
+      const screenTileSize = TILE_SIZE * viewport.zoom;
+
+      // Draw horizontal segment from project to mid point
+      const startScreen = worldToScreen(projectCenterX, projectCenterY, viewport);
+      const midScreen = worldToScreen(midX, agentCenterY, viewport);
+      const endScreen = worldToScreen(agentCenterX, agentCenterY, viewport);
+
+      // Determine belt direction
+      const goingRight = agentCenterX > projectCenterX;
+      const goingDown = agentCenterY > projectCenterY;
+
+      if (hBeltSprite && vBeltSprite) {
+        // Draw belt segments using sprites
+        const hFrame = getAnimationFrame(hBeltSprite.idle, animationTime);
+        const vFrame = getAnimationFrame(vBeltSprite.idle, animationTime);
+
+        ctx.imageSmoothingEnabled = false;
+
+        // Vertical segment from project to corner
+        const vSegments = Math.abs(agentCenterY - projectCenterY) / TILE_SIZE;
+        for (let i = 0; i < vSegments; i++) {
+          const y = goingDown
+            ? projectCenterY + i * TILE_SIZE
+            : projectCenterY - (i + 1) * TILE_SIZE;
+          const screenPos = worldToScreen(projectCenterX - TILE_SIZE / 2, y, viewport);
+          ctx.drawImage(vFrame, screenPos.x, screenPos.y, screenTileSize, screenTileSize);
+        }
+
+        // Horizontal segment from corner to agent
+        const hSegments = Math.abs(agentCenterX - projectCenterX) / TILE_SIZE;
+        for (let i = 0; i < hSegments; i++) {
+          const x = goingRight
+            ? projectCenterX + i * TILE_SIZE
+            : projectCenterX - (i + 1) * TILE_SIZE;
+          const screenPos = worldToScreen(x, agentCenterY - TILE_SIZE / 2, viewport);
+          ctx.drawImage(hFrame, screenPos.x, screenPos.y, screenTileSize, screenTileSize);
+        }
+      } else {
+        // Fallback: draw simple lines
+        ctx.strokeStyle = "#666666";
+        ctx.lineWidth = 8 * viewport.zoom;
+        ctx.setLineDash([10 * viewport.zoom, 5 * viewport.zoom]);
+
+        ctx.beginPath();
+        ctx.moveTo(startScreen.x, startScreen.y);
+        ctx.lineTo(startScreen.x, midScreen.y);
+        ctx.lineTo(endScreen.x, endScreen.y);
+        ctx.stroke();
+
+        ctx.setLineDash([]);
+
+        // Draw animated items on belt
+        const beltLength = Math.abs(projectCenterY - agentCenterY) + Math.abs(agentCenterX - projectCenterX);
+        const itemProgress = (animationTime / 2000) % 1;
+        const itemDistance = itemProgress * beltLength;
+
+        // Determine item position on L-shaped path
+        const vLength = Math.abs(agentCenterY - projectCenterY);
+        const itemSize = 6 * viewport.zoom;
+
+        ctx.fillStyle = COLORS.machineGlow;
+
+        if (itemDistance < vLength) {
+          // Item on vertical segment
+          const itemY = goingDown
+            ? projectCenterY + itemDistance
+            : projectCenterY - itemDistance;
+          const itemScreen = worldToScreen(projectCenterX, itemY, viewport);
+          ctx.beginPath();
+          ctx.arc(itemScreen.x, itemScreen.y, itemSize, 0, Math.PI * 2);
+          ctx.fill();
+        } else {
+          // Item on horizontal segment
+          const hProgress = itemDistance - vLength;
+          const itemX = goingRight
+            ? projectCenterX + hProgress
+            : projectCenterX - hProgress;
+          const itemScreen = worldToScreen(itemX, agentCenterY, viewport);
+          ctx.beginPath();
+          ctx.arc(itemScreen.x, itemScreen.y, itemSize, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+    }
   }
 
   private pulseColor(color1: string, color2: string, time: number, period: number): string {

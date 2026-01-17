@@ -3,6 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useUIStore } from "../../stores/uiStore";
 import { useAgentStore } from "../../stores/agentStore";
 import { useFactoryStore } from "../../stores/factoryStore";
+import { useMetricsStore } from "../../stores/metricsStore";
 import { FactorioRenderer, type Entity, type AgentEntity, type ResourceEntity } from "./FactorioRenderer";
 import { screenToWorld, snapToGrid, TILE_SIZE } from "./grid";
 
@@ -29,6 +30,8 @@ export function FactorioCanvas() {
   const [panStart, setPanStart] = useState<{ x: number; y: number } | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenu | null>(null);
   const [dragState, setDragState] = useState<DragState | null>(null);
+  const [showDeployDialog, setShowDeployDialog] = useState(false);
+  const [isDeploying, setIsDeploying] = useState(false);
 
   const viewport = useUIStore((s) => s.factorioViewport);
   const panCanvas = useUIStore((s) => s.panFactorioCanvas);
@@ -38,6 +41,7 @@ export function FactorioCanvas() {
   const selectedAgentIds = useAgentStore((s) => s.selectedAgentIds);
   const selectAgent = useAgentStore((s) => s.selectAgent);
   const clearSelection = useAgentStore((s) => s.clearSelection);
+  const spawnAgent = useAgentStore((s) => s.spawnAgent);
 
   const projects = useFactoryStore((s) => s.projects);
   const agentPlacements = useFactoryStore((s) => s.agentPlacements);
@@ -49,12 +53,22 @@ export function FactorioCanvas() {
   const getAgentPlacement = useFactoryStore((s) => s.getAgentPlacement);
   const findNextAvailablePosition = useFactoryStore((s) => s.findNextAvailablePosition);
 
+  const metrics = useMetricsStore((s) => s.metrics);
+  const fetchMetrics = useMetricsStore((s) => s.fetchMetrics);
+
   // Load factory state on mount
   useEffect(() => {
     if (!isLoaded) {
       loadFromBackend();
     }
   }, [isLoaded, loadFromBackend]);
+
+  // Fetch metrics on mount and periodically
+  useEffect(() => {
+    fetchMetrics();
+    const interval = setInterval(fetchMetrics, 5000);
+    return () => clearInterval(interval);
+  }, [fetchMetrics]);
 
   // Initialize renderer
   useEffect(() => {
@@ -134,6 +148,15 @@ export function FactorioCanvas() {
 
     renderer.setEntities(entities);
     renderer.setSelectedIds(selectedAgentIds);
+
+    // Build connections map from agent placements
+    const connections = new Map<string, string>();
+    for (const placement of agentPlacements.values()) {
+      if (placement.connected_project_id) {
+        connections.set(placement.agent_id, placement.connected_project_id);
+      }
+    }
+    renderer.setConnections(connections);
   }, [agents, selectedAgentIds, projects, agentPlacements, isLoaded, getAgentPlacement, findNextAvailablePosition, setAgentPlacement]);
 
   // Handle adding a project via dialog
@@ -155,6 +178,28 @@ export function FactorioCanvas() {
       console.error("Failed to open folder dialog:", error);
     }
   }, [addProject]);
+
+  // Handle deploying an agent to a project
+  const handleDeployAgent = useCallback(async (projectId: string) => {
+    const project = projects.get(projectId);
+    if (!project) return;
+
+    setIsDeploying(true);
+    setShowDeployDialog(false);
+
+    try {
+      const agentName = `Agent-${project.name}`;
+      const agent = await spawnAgent(agentName, project.path);
+
+      // Place the agent near the project
+      const agentPos = findNextAvailablePosition();
+      setAgentPlacement(agent.id, agentPos.x, agentPos.y, projectId);
+    } catch (error) {
+      console.error("Failed to deploy agent:", error);
+    } finally {
+      setIsDeploying(false);
+    }
+  }, [projects, spawnAgent, findNextAvailablePosition, setAgentPlacement]);
 
   // Mouse handlers
   const handleMouseDown = useCallback(
@@ -312,13 +357,45 @@ export function FactorioCanvas() {
     return "grab";
   };
 
+  const formatTokens = (count: number) => {
+    if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1)}M`;
+    if (count >= 1_000) return `${(count / 1_000).toFixed(1)}K`;
+    return count.toString();
+  };
+
   return (
     <div ref={containerRef} className="factorio-canvas">
       <div className="factorio-canvas__header">
-        <span>FACTORY VIEW</span>
-        <span className="factorio-canvas__stats">
-          {projects.size} projects | {agents.size} agents | {selectedAgentIds.size} selected
-        </span>
+        <span className="factorio-canvas__title">FACTORY</span>
+        <div className="factorio-canvas__stats">
+          <span className="factorio-canvas__stat">
+            <span className="factorio-canvas__stat-label">Projects</span>
+            <span className="factorio-canvas__stat-value">{projects.size}</span>
+          </span>
+          <span className="factorio-canvas__stat">
+            <span className="factorio-canvas__stat-label">Agents</span>
+            <span className="factorio-canvas__stat-value">{agents.size}</span>
+          </span>
+          <span className="factorio-canvas__stat">
+            <span className="factorio-canvas__stat-label">Tokens</span>
+            <span className="factorio-canvas__stat-value">{formatTokens(metrics.total_tokens)}</span>
+          </span>
+          <span className="factorio-canvas__stat">
+            <span className="factorio-canvas__stat-label">Cost</span>
+            <span className="factorio-canvas__stat-value factorio-canvas__stat-value--cost">
+              ${metrics.total_cost_dollars.toFixed(2)}
+            </span>
+          </span>
+        </div>
+        <div className="factorio-canvas__controls">
+          <button
+            className="btn btn--primary"
+            onClick={() => setShowDeployDialog(true)}
+            disabled={projects.size === 0 || isDeploying}
+          >
+            {isDeploying ? "Deploying..." : "Deploy Agent"}
+          </button>
+        </div>
       </div>
       <div className="factorio-canvas__content">
         <canvas
@@ -348,6 +425,44 @@ export function FactorioCanvas() {
             >
               Add Project
             </button>
+          </div>
+        )}
+
+        {/* Deploy Dialog */}
+        {showDeployDialog && (
+          <div className="deploy-dialog-overlay" onClick={() => setShowDeployDialog(false)}>
+            <div className="deploy-dialog" onClick={(e) => e.stopPropagation()}>
+              <div className="deploy-dialog__header">
+                <span className="deploy-dialog__title">Deploy Agent to Project</span>
+                <button
+                  className="deploy-dialog__close"
+                  onClick={() => setShowDeployDialog(false)}
+                >
+                  ×
+                </button>
+              </div>
+              <div className="deploy-dialog__content">
+                {projects.size === 0 ? (
+                  <p className="deploy-dialog__empty">
+                    No projects available. Right-click on the canvas to add a project first.
+                  </p>
+                ) : (
+                  <ul className="deploy-dialog__list">
+                    {Array.from(projects.values()).map((project) => (
+                      <li key={project.id}>
+                        <button
+                          className="deploy-dialog__project"
+                          onClick={() => handleDeployAgent(project.id)}
+                        >
+                          <span className="deploy-dialog__project-name">{project.name}</span>
+                          <span className="deploy-dialog__project-path">{project.path}</span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
           </div>
         )}
       </div>
