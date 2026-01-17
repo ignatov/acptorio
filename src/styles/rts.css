@@ -740,6 +740,14 @@ body {
   background: var(--bg-tertiary);
 }
 
+.factorio-context-menu__item--danger {
+  color: #ef4444;
+}
+
+.factorio-context-menu__item--danger:hover {
+  background: rgba(239, 68, 68, 0.15);
+}
+
 /* Deploy Dialog */
 .deploy-dialog-overlay {
   position: fixed;

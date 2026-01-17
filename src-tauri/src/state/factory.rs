@@ -21,6 +21,11 @@ pub struct AgentPlacement {
     pub grid_x: i32,
     pub grid_y: i32,
     pub connected_project_id: Option<String>,
+    // Persisted agent metadata for restore on startup
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub working_directory: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -182,6 +187,13 @@ impl FactoryStore {
             existing.grid_y = placement.grid_y;
             if placement.connected_project_id.is_some() {
                 existing.connected_project_id = placement.connected_project_id;
+            }
+            // Update metadata if provided
+            if placement.name.is_some() {
+                existing.name = placement.name;
+            }
+            if placement.working_directory.is_some() {
+                existing.working_directory = placement.working_directory;
             }
         } else {
             layout.agent_placements.push(placement);

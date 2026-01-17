@@ -14,6 +14,9 @@ export interface AgentPlacement {
   grid_x: number;
   grid_y: number;
   connected_project_id: string | null;
+  // Persisted agent metadata for restore on startup
+  name?: string | null;
+  working_directory?: string | null;
 }
 
 export interface FactoryViewport {
@@ -32,6 +35,7 @@ export interface FactoryLayout {
 interface FactoryState {
   projects: Map<string, ProjectNode>;
   agentPlacements: Map<string, AgentPlacement>;
+  viewport: FactoryViewport;
   isLoaded: boolean;
 
   // Project actions
@@ -41,7 +45,7 @@ interface FactoryState {
   getProjectByPath: (path: string) => ProjectNode | undefined;
 
   // Agent placement actions
-  setAgentPlacement: (agentId: string, gridX: number, gridY: number, connectedProjectId?: string | null) => Promise<void>;
+  setAgentPlacement: (agentId: string, gridX: number, gridY: number, connectedProjectId?: string | null, name?: string | null, workingDirectory?: string | null) => Promise<void>;
   removeAgentPlacement: (agentId: string) => Promise<void>;
   getAgentPlacement: (agentId: string) => AgentPlacement | undefined;
 
@@ -50,6 +54,9 @@ interface FactoryState {
 
   // Persistence
   loadFromBackend: () => Promise<void>;
+  getPersistedAgents: () => AgentPlacement[];
+  saveViewport: (offsetX: number, offsetY: number, zoom: number) => Promise<void>;
+  getViewport: () => FactoryViewport;
 }
 
 function generateId(): string {
@@ -64,6 +71,7 @@ function getNameFromPath(path: string): string {
 function updateFromLayout(layout: FactoryLayout): {
   projects: Map<string, ProjectNode>;
   agentPlacements: Map<string, AgentPlacement>;
+  viewport: FactoryViewport;
 } {
   const projects = new Map<string, ProjectNode>();
   for (const project of layout.projects) {
@@ -75,12 +83,13 @@ function updateFromLayout(layout: FactoryLayout): {
     agentPlacements.set(placement.agent_id, placement);
   }
 
-  return { projects, agentPlacements };
+  return { projects, agentPlacements, viewport: layout.viewport };
 }
 
 export const useFactoryStore = create<FactoryState>((set, get) => ({
   projects: new Map(),
   agentPlacements: new Map(),
+  viewport: { offset_x: 0, offset_y: 0, zoom: 1 },
   isLoaded: false,
 
   addProject: async (path, gridX, gridY) => {
@@ -159,13 +168,15 @@ export const useFactoryStore = create<FactoryState>((set, get) => ({
     return undefined;
   },
 
-  setAgentPlacement: async (agentId, gridX, gridY, connectedProjectId = null) => {
+  setAgentPlacement: async (agentId, gridX, gridY, connectedProjectId = null, name = null, workingDirectory = null) => {
     try {
       const layout = await invoke<FactoryLayout>("set_agent_placement", {
         agentId,
         gridX,
         gridY,
         connectedProjectId,
+        name,
+        workingDirectory,
       });
 
       const updated = updateFromLayout(layout);
@@ -264,11 +275,37 @@ export const useFactoryStore = create<FactoryState>((set, get) => ({
       set({
         projects: updated.projects,
         agentPlacements: updated.agentPlacements,
+        viewport: updated.viewport,
         isLoaded: true,
       });
     } catch (error) {
       console.error("Failed to load factory layout:", error);
       set({ isLoaded: true });
     }
+  },
+
+  getPersistedAgents: () => {
+    const { agentPlacements } = get();
+    // Return placements that have persisted agent metadata
+    return Array.from(agentPlacements.values()).filter(
+      (p) => p.name && p.working_directory
+    );
+  },
+
+  saveViewport: async (offsetX, offsetY, zoom) => {
+    try {
+      await invoke<FactoryLayout>("set_factory_viewport", {
+        offsetX,
+        offsetY,
+        zoom,
+      });
+      set({ viewport: { offset_x: offsetX, offset_y: offsetY, zoom } });
+    } catch (error) {
+      console.error("Failed to save viewport:", error);
+    }
+  },
+
+  getViewport: () => {
+    return get().viewport;
   },
 }));

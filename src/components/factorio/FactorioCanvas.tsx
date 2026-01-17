@@ -21,27 +21,53 @@ interface DragState {
   startGridY: number;
 }
 
+interface PendingDrag {
+  entityId: string;
+  entityType: "agent" | "resource";
+  startGridX: number;
+  startGridY: number;
+  startScreenX: number;
+  startScreenY: number;
+}
+
+interface SelectionBox {
+  startX: number;
+  startY: number;
+  currentX: number;
+  currentY: number;
+}
+
+const DRAG_THRESHOLD = 5; // pixels before drag starts
+
 export function FactorioCanvas() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<FactorioRenderer | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const hasRestoredAgents = useRef(false);
+  const hasRestoredViewport = useRef(false);
+  const viewportSaveTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [isPanning, setIsPanning] = useState(false);
   const [panStart, setPanStart] = useState<{ x: number; y: number } | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenu | null>(null);
+  const [pendingDrag, setPendingDrag] = useState<PendingDrag | null>(null);
   const [dragState, setDragState] = useState<DragState | null>(null);
+  const [selectionBox, setSelectionBox] = useState<SelectionBox | null>(null);
   const [showDeployDialog, setShowDeployDialog] = useState(false);
   const [isDeploying, setIsDeploying] = useState(false);
 
   const viewport = useUIStore((s) => s.factorioViewport);
+  const setFactorioViewport = useUIStore((s) => s.setFactorioViewport);
   const panCanvas = useUIStore((s) => s.panFactorioCanvas);
   const zoomCanvas = useUIStore((s) => s.zoomFactorioCanvas);
 
   const agents = useAgentStore((s) => s.agents);
   const selectedAgentIds = useAgentStore((s) => s.selectedAgentIds);
   const selectAgent = useAgentStore((s) => s.selectAgent);
+  const setSelectedAgentIds = useAgentStore((s) => s.setSelectedAgentIds);
   const clearSelection = useAgentStore((s) => s.clearSelection);
   const spawnAgent = useAgentStore((s) => s.spawnAgent);
+  const stopAgent = useAgentStore((s) => s.stopAgent);
 
   const projects = useFactoryStore((s) => s.projects);
   const agentPlacements = useFactoryStore((s) => s.agentPlacements);
@@ -50,8 +76,12 @@ export function FactorioCanvas() {
   const addProject = useFactoryStore((s) => s.addProject);
   const moveProject = useFactoryStore((s) => s.moveProject);
   const setAgentPlacement = useFactoryStore((s) => s.setAgentPlacement);
+  const removeAgentPlacement = useFactoryStore((s) => s.removeAgentPlacement);
   const getAgentPlacement = useFactoryStore((s) => s.getAgentPlacement);
   const findNextAvailablePosition = useFactoryStore((s) => s.findNextAvailablePosition);
+  const getPersistedAgents = useFactoryStore((s) => s.getPersistedAgents);
+  const savedViewport = useFactoryStore((s) => s.viewport);
+  const saveViewport = useFactoryStore((s) => s.saveViewport);
 
   const metrics = useMetricsStore((s) => s.metrics);
   const fetchMetrics = useMetricsStore((s) => s.fetchMetrics);
@@ -63,12 +93,133 @@ export function FactorioCanvas() {
     }
   }, [isLoaded, loadFromBackend]);
 
+  // Restore viewport from saved state
+  useEffect(() => {
+    if (!isLoaded || hasRestoredViewport.current) return;
+
+    // Apply saved viewport to uiStore
+    if (savedViewport.offset_x !== 0 || savedViewport.offset_y !== 0 || savedViewport.zoom !== 1) {
+      setFactorioViewport({
+        offsetX: savedViewport.offset_x,
+        offsetY: savedViewport.offset_y,
+        zoom: savedViewport.zoom,
+      });
+    }
+    hasRestoredViewport.current = true;
+  }, [isLoaded, savedViewport, setFactorioViewport]);
+
+  // Save viewport when it changes (debounced)
+  useEffect(() => {
+    if (!isLoaded || !hasRestoredViewport.current) return;
+
+    // Clear previous timeout
+    if (viewportSaveTimeout.current) {
+      clearTimeout(viewportSaveTimeout.current);
+    }
+
+    // Debounce save to avoid too many writes
+    viewportSaveTimeout.current = setTimeout(() => {
+      saveViewport(viewport.offsetX, viewport.offsetY, viewport.zoom);
+    }, 500);
+
+    return () => {
+      if (viewportSaveTimeout.current) {
+        clearTimeout(viewportSaveTimeout.current);
+      }
+    };
+  }, [isLoaded, viewport.offsetX, viewport.offsetY, viewport.zoom, saveViewport]);
+
+  // Restore persisted agents after factory is loaded
+  useEffect(() => {
+    if (!isLoaded || hasRestoredAgents.current) return;
+
+    // Mark as restored IMMEDIATELY to prevent re-runs when agents state changes
+    hasRestoredAgents.current = true;
+
+    const restoreAgents = async () => {
+      const persistedAgents = getPersistedAgents();
+
+      for (const placement of persistedAgents) {
+        if (placement.name && placement.working_directory) {
+          try {
+            console.log(`Restoring agent: ${placement.name}`);
+            const agent = await spawnAgent(placement.name, placement.working_directory);
+
+            // Agent gets a new ID on spawn, update placement
+            // Remove old placement and create new one with the new agent ID
+            await removeAgentPlacement(placement.agent_id);
+            await setAgentPlacement(
+              agent.id,
+              placement.grid_x,
+              placement.grid_y,
+              placement.connected_project_id,
+              placement.name,
+              placement.working_directory
+            );
+          } catch (error) {
+            console.error(`Failed to restore agent ${placement.name}:`, error);
+          }
+        }
+      }
+    };
+
+    restoreAgents();
+  }, [isLoaded, getPersistedAgents, spawnAgent, setAgentPlacement, removeAgentPlacement]);
+
   // Fetch metrics on mount and periodically
   useEffect(() => {
     fetchMetrics();
     const interval = setInterval(fetchMetrics, 5000);
     return () => clearInterval(interval);
   }, [fetchMetrics]);
+
+  // Delete selected agents handler
+  const handleDeleteSelected = useCallback(async () => {
+    if (selectedAgentIds.size === 0) return;
+
+    const idsToDelete = Array.from(selectedAgentIds);
+    clearSelection();
+
+    for (const agentId of idsToDelete) {
+      try {
+        await stopAgent(agentId);
+        await removeAgentPlacement(agentId);
+      } catch (error) {
+        console.error(`Failed to delete agent ${agentId}:`, error);
+      }
+    }
+  }, [selectedAgentIds, clearSelection, stopAgent, removeAgentPlacement]);
+
+  // Keyboard handler for delete and select all
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Delete or Backspace to remove selected agents
+      if ((e.key === "Delete" || e.key === "Backspace") && selectedAgentIds.size > 0) {
+        // Don't delete if focus is on an input
+        if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+          return;
+        }
+        e.preventDefault();
+        handleDeleteSelected();
+      }
+
+      // Cmd/Ctrl+A to select all agents
+      if ((e.metaKey || e.ctrlKey) && e.key === "a") {
+        e.preventDefault();
+        const allAgentIds = new Set(agents.keys());
+        setSelectedAgentIds(allAgentIds);
+      }
+
+      // Escape to clear selection
+      if (e.key === "Escape") {
+        clearSelection();
+        setContextMenu(null);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [selectedAgentIds, handleDeleteSelected, agents, setSelectedAgentIds, clearSelection]);
 
   // Initialize renderer
   useEffect(() => {
@@ -191,9 +342,9 @@ export function FactorioCanvas() {
       const agentName = `Agent-${project.name}`;
       const agent = await spawnAgent(agentName, project.path);
 
-      // Place the agent near the project
+      // Place the agent near the project and persist metadata
       const agentPos = findNextAvailablePosition();
-      setAgentPlacement(agent.id, agentPos.x, agentPos.y, projectId);
+      setAgentPlacement(agent.id, agentPos.x, agentPos.y, projectId, agentName, project.path);
     } catch (error) {
       console.error("Failed to deploy agent:", error);
     } finally {
@@ -224,23 +375,39 @@ export function FactorioCanvas() {
       if (e.button === 0) { // Left click
         if (entity) {
           if (entity.type === "agent") {
-            const multiSelect = e.ctrlKey || e.metaKey;
+            const multiSelect = e.ctrlKey || e.metaKey || e.shiftKey;
             selectAgent(entity.id, multiSelect);
           }
-          // Start dragging the entity
-          setDragState({
+          // Set up pending drag - actual drag starts after threshold
+          setPendingDrag({
             entityId: entity.id,
             entityType: entity.type,
             startGridX: entity.gridX,
             startGridY: entity.gridY,
+            startScreenX: x,
+            startScreenY: y,
           });
         } else {
-          // Start panning
-          if (!e.ctrlKey && !e.metaKey) {
-            clearSelection();
+          // Shift+drag for box selection, otherwise pan
+          if (e.shiftKey) {
+            // Start box selection
+            if (!e.ctrlKey && !e.metaKey) {
+              clearSelection();
+            }
+            setSelectionBox({
+              startX: x,
+              startY: y,
+              currentX: x,
+              currentY: y,
+            });
+          } else {
+            // Start panning
+            if (!e.ctrlKey && !e.metaKey) {
+              clearSelection();
+            }
+            setIsPanning(true);
+            setPanStart({ x: e.clientX, y: e.clientY });
           }
-          setIsPanning(true);
-          setPanStart({ x: e.clientX, y: e.clientY });
         }
       }
     },
@@ -257,6 +424,42 @@ export function FactorioCanvas() {
         const deltaY = e.clientY - panStart.y;
         panCanvas(deltaX, deltaY);
         setPanStart({ x: e.clientX, y: e.clientY });
+      } else if (selectionBox && canvas) {
+        // Update selection box
+        const rect = canvas.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        setSelectionBox({
+          ...selectionBox,
+          currentX: x,
+          currentY: y,
+        });
+      } else if (pendingDrag && canvas) {
+        // Check if we've moved past the drag threshold
+        const rect = canvas.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        const dx = x - pendingDrag.startScreenX;
+        const dy = y - pendingDrag.startScreenY;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+
+        if (distance >= DRAG_THRESHOLD) {
+          // Convert pending drag to actual drag
+          setDragState({
+            entityId: pendingDrag.entityId,
+            entityType: pendingDrag.entityType,
+            startGridX: pendingDrag.startGridX,
+            startGridY: pendingDrag.startGridY,
+          });
+          setPendingDrag(null);
+
+          // Immediately update drag preview
+          const world = screenToWorld(x, y, viewport);
+          const snapped = snapToGrid(world.x, world.y);
+          if (renderer) {
+            renderer.setDragPreview(pendingDrag.entityId, snapped.x / TILE_SIZE, snapped.y / TILE_SIZE);
+          }
+        }
       } else if (dragState && canvas) {
         // Update entity position while dragging (visual only)
         const rect = canvas.getBoundingClientRect();
@@ -278,7 +481,7 @@ export function FactorioCanvas() {
         renderer.setHoveredId(entity?.id ?? null);
       }
     },
-    [isPanning, panStart, panCanvas, dragState, viewport]
+    [isPanning, panStart, panCanvas, selectionBox, pendingDrag, dragState, viewport]
   );
 
   const handleMouseUp = useCallback(
@@ -286,7 +489,46 @@ export function FactorioCanvas() {
       const canvas = canvasRef.current;
       const renderer = rendererRef.current;
 
-      if (dragState && canvas) {
+      if (selectionBox) {
+        // Finalize box selection - find agents within the box
+        const minX = Math.min(selectionBox.startX, selectionBox.currentX);
+        const maxX = Math.max(selectionBox.startX, selectionBox.currentX);
+        const minY = Math.min(selectionBox.startY, selectionBox.currentY);
+        const maxY = Math.max(selectionBox.startY, selectionBox.currentY);
+
+        // Convert screen box to world coordinates
+        const worldMin = screenToWorld(minX, minY, viewport);
+        const worldMax = screenToWorld(maxX, maxY, viewport);
+
+        // Find agents within the box
+        const selected = new Set<string>();
+        for (const placement of agentPlacements.values()) {
+          const agentCenterX = (placement.grid_x + 1) * TILE_SIZE; // Center of 2x2 agent
+          const agentCenterY = (placement.grid_y + 1) * TILE_SIZE;
+
+          if (
+            agentCenterX >= worldMin.x &&
+            agentCenterX <= worldMax.x &&
+            agentCenterY >= worldMin.y &&
+            agentCenterY <= worldMax.y
+          ) {
+            selected.add(placement.agent_id);
+          }
+        }
+
+        if (selected.size > 0) {
+          // Merge with existing selection if Ctrl/Cmd was held
+          if (e.ctrlKey || e.metaKey) {
+            const merged = new Set(selectedAgentIds);
+            selected.forEach((id) => merged.add(id));
+            setSelectedAgentIds(merged);
+          } else {
+            setSelectedAgentIds(selected);
+          }
+        }
+
+        setSelectionBox(null);
+      } else if (dragState && canvas) {
         const rect = canvas.getBoundingClientRect();
         const x = e.clientX - rect.left;
         const y = e.clientY - rect.top;
@@ -309,10 +551,25 @@ export function FactorioCanvas() {
 
       setIsPanning(false);
       setPanStart(null);
+      setPendingDrag(null);
       setDragState(null);
     },
-    [dragState, viewport, setAgentPlacement, moveProject]
+    [selectionBox, dragState, viewport, agentPlacements, selectedAgentIds, setSelectedAgentIds, setAgentPlacement, moveProject]
   );
+
+  const handleMouseLeave = useCallback(() => {
+    // Cancel selection box without selecting
+    setSelectionBox(null);
+    setIsPanning(false);
+    setPanStart(null);
+    setPendingDrag(null);
+    setDragState(null);
+
+    const renderer = rendererRef.current;
+    if (renderer) {
+      renderer.clearDragPreview();
+    }
+  }, []);
 
   const handleContextMenu = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -353,6 +610,7 @@ export function FactorioCanvas() {
 
   const getCursor = () => {
     if (dragState) return "grabbing";
+    if (selectionBox) return "crosshair";
     if (isPanning) return "grabbing";
     return "grab";
   };
@@ -403,11 +661,28 @@ export function FactorioCanvas() {
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
-          onMouseLeave={handleMouseUp}
+          onMouseLeave={handleMouseLeave}
           onContextMenu={handleContextMenu}
           onWheel={handleWheel}
           style={{ width: "100%", height: "100%", cursor: getCursor() }}
         />
+
+        {/* Selection Box */}
+        {selectionBox && (
+          <div
+            className="selection-box"
+            style={{
+              position: "absolute",
+              left: Math.min(selectionBox.startX, selectionBox.currentX),
+              top: Math.min(selectionBox.startY, selectionBox.currentY),
+              width: Math.abs(selectionBox.currentX - selectionBox.startX),
+              height: Math.abs(selectionBox.currentY - selectionBox.startY),
+              border: "1px solid #4a9eff",
+              backgroundColor: "rgba(74, 158, 255, 0.15)",
+              pointerEvents: "none",
+            }}
+          />
+        )}
 
         {/* Context Menu */}
         {contextMenu && (
@@ -425,6 +700,17 @@ export function FactorioCanvas() {
             >
               Add Project
             </button>
+            {selectedAgentIds.size > 0 && (
+              <button
+                className="factorio-context-menu__item factorio-context-menu__item--danger"
+                onClick={() => {
+                  setContextMenu(null);
+                  handleDeleteSelected();
+                }}
+              >
+                Delete Selected ({selectedAgentIds.size})
+              </button>
+            )}
           </div>
         )}
 

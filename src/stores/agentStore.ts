@@ -21,6 +21,7 @@ interface AgentState {
   updateAgent: (agentId: string, update: Partial<AgentInfo>) => void;
   removeAgent: (agentId: string) => void;
   selectAgent: (agentId: string, multiSelect?: boolean) => void;
+  setSelectedAgentIds: (ids: Set<string>) => void;
   deselectAgent: (agentId: string) => void;
   clearSelection: () => void;
   selectAllAgents: () => void;
@@ -77,6 +78,10 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       selectedAgentIds.add(agentId);
       return { selectedAgentIds };
     });
+  },
+
+  setSelectedAgentIds: (ids) => {
+    set({ selectedAgentIds: ids });
   },
 
   deselectAgent: (agentId) => {
