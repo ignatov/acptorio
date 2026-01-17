@@ -1,4 +1,4 @@
-import { useRef, useEffect, useCallback, useState } from "react";
+import { useRef, useEffect, useCallback, useState, useMemo } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useUIStore } from "../../stores/uiStore";
 import { useAgentStore } from "../../stores/agentStore";
@@ -6,6 +6,7 @@ import { useFactoryStore } from "../../stores/factoryStore";
 import { useMetricsStore } from "../../stores/metricsStore";
 import { FactorioRenderer, type Entity, type AgentEntity, type ResourceEntity } from "./FactorioRenderer";
 import { screenToWorld, snapToGrid, TILE_SIZE } from "./grid";
+import { AgentChatPalette } from "./AgentChatPalette";
 
 interface ContextMenu {
   x: number;
@@ -621,6 +622,13 @@ export function FactorioCanvas() {
     return count.toString();
   };
 
+  // Get the selected agent when exactly one is selected
+  const selectedAgent = useMemo(() => {
+    if (selectedAgentIds.size !== 1) return null;
+    const agentId = Array.from(selectedAgentIds)[0];
+    return agents.get(agentId) ?? null;
+  }, [selectedAgentIds, agents]);
+
   return (
     <div ref={containerRef} className="factorio-canvas">
       <div className="factorio-canvas__header">
@@ -750,6 +758,14 @@ export function FactorioCanvas() {
               </div>
             </div>
           </div>
+        )}
+
+        {/* Agent Chat Palette */}
+        {selectedAgent && (
+          <AgentChatPalette
+            agent={selectedAgent}
+            onClose={clearSelection}
+          />
         )}
       </div>
     </div>

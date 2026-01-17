@@ -19,6 +19,7 @@ const COLORS = {
   machineAttention: "#ffd700",
   machineBorder: "#4a5568",
   machineBorderSelected: "#e94560",
+  machineGlow: "#00ff88",
   resourceNode: "#0f3460",
   resourceBorder: "#00d4ff",
   text: "#f0f0f0",
