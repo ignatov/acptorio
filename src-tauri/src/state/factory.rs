@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use tokio::sync::RwLock;
 
 const FACTORY_LAYOUT_FILE: &str = "factory-layout.json";
-const LAYOUT_VERSION: u32 = 1;
+const LAYOUT_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectNode {
@@ -13,6 +13,10 @@ pub struct ProjectNode {
     pub name: String,
     pub grid_x: i32,
     pub grid_y: i32,
+    #[serde(default)]
+    pub file_count: Option<u32>,
+    #[serde(default)]
+    pub color_index: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -96,7 +100,8 @@ impl FactoryStore {
         let content = fs::read_to_string(path).ok()?;
         let layout: FactoryLayout = serde_json::from_str(&content).ok()?;
 
-        if layout.version != LAYOUT_VERSION {
+        // Accept version 1 or 2 (serde defaults handle missing fields)
+        if layout.version != LAYOUT_VERSION && layout.version != 1 {
             tracing::warn!("Factory layout version mismatch, using default");
             return None;
         }
@@ -165,6 +170,27 @@ impl FactoryStore {
         if let Some(project) = layout.projects.iter_mut().find(|p| p.id == project_id) {
             project.grid_x = grid_x;
             project.grid_y = grid_y;
+        }
+
+        self.save_to_file(&layout)?;
+        Ok(layout.clone())
+    }
+
+    pub async fn update_project(
+        &self,
+        project_id: &str,
+        file_count: Option<u32>,
+        color_index: Option<u32>,
+    ) -> Result<FactoryLayout, String> {
+        let mut layout = self.layout.write().await;
+
+        if let Some(project) = layout.projects.iter_mut().find(|p| p.id == project_id) {
+            if file_count.is_some() {
+                project.file_count = file_count;
+            }
+            if color_index.is_some() {
+                project.color_index = color_index;
+            }
         }
 
         self.save_to_file(&layout)?;

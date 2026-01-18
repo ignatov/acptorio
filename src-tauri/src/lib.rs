@@ -5,11 +5,12 @@ mod filesystem;
 mod state;
 
 use commands::{
-    add_factory_project, get_agent, get_factory_layout, get_fog_state, get_metrics,
+    add_factory_project, count_files, get_agent, get_factory_layout, get_fog_state, get_metrics,
     get_project_path, get_project_tree, is_file_explored, list_agents, move_factory_project,
     read_file, remove_agent_placement, remove_factory_project, reset_metrics,
     respond_to_permission, reveal_file, save_factory_layout, scan_project, send_prompt,
     set_agent_placement, set_factory_viewport, spawn_agent, stop_agent, stop_all_agents,
+    update_factory_project,
 };
 use state::AppState;
 use std::sync::Arc;
@@ -39,6 +40,7 @@ pub fn run() {
             get_fog_state,
             is_file_explored,
             read_file,
+            count_files,
             // Metrics commands
             get_metrics,
             reset_metrics,
@@ -48,6 +50,7 @@ pub fn run() {
             add_factory_project,
             remove_factory_project,
             move_factory_project,
+            update_factory_project,
             set_agent_placement,
             remove_agent_placement,
             set_factory_viewport,

@@ -23,6 +23,7 @@ pub async fn add_factory_project(
     name: String,
     grid_x: i32,
     grid_y: i32,
+    color_index: Option<u32>,
 ) -> Result<FactoryLayout, String> {
     let project = ProjectNode {
         id,
@@ -30,8 +31,20 @@ pub async fn add_factory_project(
         name,
         grid_x,
         grid_y,
+        file_count: None,
+        color_index,
     };
     state.factory.add_project(project).await
+}
+
+#[tauri::command]
+pub async fn update_factory_project(
+    state: State<'_, Arc<AppState>>,
+    project_id: String,
+    file_count: Option<u32>,
+    color_index: Option<u32>,
+) -> Result<FactoryLayout, String> {
+    state.factory.update_project(&project_id, file_count, color_index).await
 }
 
 #[tauri::command]

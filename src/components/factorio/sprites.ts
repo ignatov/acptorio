@@ -59,6 +59,18 @@ const PALETTE = {
   selectionGlow: "rgba(255, 204, 0, 0.3)",
 };
 
+// Different colors for each project (Factorio-style resource colors)
+export const PROJECT_COLORS = [
+  { main: "#b87333", light: "#cd853f", dark: "#8b4513" }, // Copper
+  { main: "#6b8e9f", light: "#87ceeb", dark: "#4a6670" }, // Iron (blue-gray)
+  { main: "#4a9f4a", light: "#6fbf6f", dark: "#2d6b2d" }, // Uranium (green)
+  { main: "#9f6b9f", light: "#bf8fbf", dark: "#6b4a6b" }, // Purple
+  { main: "#9f9f4a", light: "#bfbf6f", dark: "#6b6b2d" }, // Yellow/Gold
+  { main: "#4a6b9f", light: "#6f8fbf", dark: "#2d4a6b" }, // Blue
+  { main: "#9f4a4a", light: "#bf6f6f", dark: "#6b2d2d" }, // Red
+  { main: "#4a9f9f", light: "#6fbfbf", dark: "#2d6b6b" }, // Cyan
+];
+
 export class SpriteManager {
   private sprites: Map<string, SpriteSet> = new Map();
   private ready: boolean = false;

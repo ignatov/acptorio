@@ -84,3 +84,49 @@ pub async fn read_file(path: String) -> Result<String, String> {
         .await
         .map_err(|e| e.to_string())
 }
+
+/// Count files in a directory recursively (ignores hidden files and common ignore patterns)
+#[tauri::command]
+pub async fn count_files(path: String) -> Result<u32, String> {
+    let path = PathBuf::from(path);
+    count_files_recursive(&path).await.map_err(|e| e.to_string())
+}
+
+async fn count_files_recursive(dir: &PathBuf) -> Result<u32, std::io::Error> {
+    let mut count = 0u32;
+    let mut stack = vec![dir.clone()];
+
+    while let Some(current_dir) = stack.pop() {
+        let mut entries = match tokio::fs::read_dir(&current_dir).await {
+            Ok(e) => e,
+            Err(_) => continue, // Skip directories we can't read
+        };
+
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let file_name = entry.file_name();
+            let name = file_name.to_string_lossy();
+
+            // Skip hidden files and common ignore patterns
+            if name.starts_with('.')
+                || name == "node_modules"
+                || name == "target"
+                || name == "dist"
+                || name == "build"
+                || name == "__pycache__"
+                || name == ".git"
+            {
+                continue;
+            }
+
+            if let Ok(file_type) = entry.file_type().await {
+                if file_type.is_file() {
+                    count = count.saturating_add(1);
+                } else if file_type.is_dir() {
+                    stack.push(entry.path());
+                }
+            }
+        }
+    }
+
+    Ok(count)
+}

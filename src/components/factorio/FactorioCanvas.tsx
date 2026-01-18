@@ -75,6 +75,7 @@ export function FactorioCanvas() {
   const isLoaded = useFactoryStore((s) => s.isLoaded);
   const loadFromBackend = useFactoryStore((s) => s.loadFromBackend);
   const addProject = useFactoryStore((s) => s.addProject);
+  const removeProject = useFactoryStore((s) => s.removeProject);
   const moveProject = useFactoryStore((s) => s.moveProject);
   const setAgentPlacement = useFactoryStore((s) => s.setAgentPlacement);
   const removeAgentPlacement = useFactoryStore((s) => s.removeAgentPlacement);
@@ -83,6 +84,9 @@ export function FactorioCanvas() {
   const getPersistedAgents = useFactoryStore((s) => s.getPersistedAgents);
   const savedViewport = useFactoryStore((s) => s.viewport);
   const saveViewport = useFactoryStore((s) => s.saveViewport);
+
+  // Selected project IDs (local state since projects don't have a store for selection)
+  const [selectedProjectIds, setSelectedProjectIds] = useState<Set<string>>(new Set());
 
   const metrics = useMetricsStore((s) => s.metrics);
   const fetchMetrics = useMetricsStore((s) => s.fetchMetrics);
@@ -176,12 +180,16 @@ export function FactorioCanvas() {
 
   // Delete selected agents handler
   const handleDeleteSelected = useCallback(async () => {
-    if (selectedAgentIds.size === 0) return;
+    if (selectedAgentIds.size === 0 && selectedProjectIds.size === 0) return;
 
-    const idsToDelete = Array.from(selectedAgentIds);
+    const agentIdsToDelete = Array.from(selectedAgentIds);
+    const projectIdsToDelete = Array.from(selectedProjectIds);
+
     clearSelection();
+    setSelectedProjectIds(new Set());
 
-    for (const agentId of idsToDelete) {
+    // Delete agents
+    for (const agentId of agentIdsToDelete) {
       try {
         await stopAgent(agentId);
         await removeAgentPlacement(agentId);
@@ -189,7 +197,38 @@ export function FactorioCanvas() {
         console.error(`Failed to delete agent ${agentId}:`, error);
       }
     }
-  }, [selectedAgentIds, clearSelection, stopAgent, removeAgentPlacement]);
+
+    // Delete projects
+    for (const projectId of projectIdsToDelete) {
+      try {
+        await removeProject(projectId);
+      } catch (error) {
+        console.error(`Failed to delete project ${projectId}:`, error);
+      }
+    }
+  }, [selectedAgentIds, selectedProjectIds, clearSelection, stopAgent, removeAgentPlacement, removeProject]);
+
+  // Handle deploying an agent to a project
+  const handleDeployAgent = useCallback(async (projectId: string) => {
+    const project = projects.get(projectId);
+    if (!project) return;
+
+    setIsDeploying(true);
+    setShowDeployDialog(false);
+
+    try {
+      const agentName = `Agent-${project.name}`;
+      const agent = await spawnAgent(agentName, project.path);
+
+      // Place the agent near the project and persist metadata
+      const agentPos = findNextAvailablePosition({ x: project.grid_x, y: project.grid_y });
+      setAgentPlacement(agent.id, agentPos.x, agentPos.y, projectId, agentName, project.path);
+    } catch (error) {
+      console.error("Failed to deploy agent:", error);
+    } finally {
+      setIsDeploying(false);
+    }
+  }, [projects, spawnAgent, findNextAvailablePosition, setAgentPlacement]);
 
   // Keyboard handler for delete, select all, and WASD navigation
   useEffect(() => {
@@ -232,23 +271,33 @@ export function FactorioCanvas() {
         return;
       }
 
-      // Delete or Backspace to remove selected agents
-      if ((e.key === "Delete" || e.key === "Backspace") && selectedAgentIds.size > 0) {
+      // Delete or Backspace to remove selected agents/projects
+      if ((e.key === "Delete" || e.key === "Backspace") && (selectedAgentIds.size > 0 || selectedProjectIds.size > 0)) {
         e.preventDefault();
         handleDeleteSelected();
       }
 
-      // Cmd/Ctrl+A to select all agents
+      // Cmd/Ctrl+A to select all agents and projects
       if ((e.metaKey || e.ctrlKey) && e.key === "a") {
         e.preventDefault();
         const allAgentIds = new Set(agents.keys());
+        const allProjectIds = new Set(projects.keys());
         setSelectedAgentIds(allAgentIds);
+        setSelectedProjectIds(allProjectIds);
       }
 
       // Escape to clear selection
       if (e.key === "Escape") {
         clearSelection();
+        setSelectedProjectIds(new Set());
         setContextMenu(null);
+      }
+
+      // E to deploy agent to selected project
+      if (key === "e" && selectedProjectIds.size === 1 && !isDeploying) {
+        e.preventDefault();
+        const projectId = Array.from(selectedProjectIds)[0];
+        handleDeployAgent(projectId);
       }
     };
 
@@ -269,7 +318,7 @@ export function FactorioCanvas() {
       window.removeEventListener("keyup", handleKeyUp);
       if (animationId) cancelAnimationFrame(animationId);
     };
-  }, [selectedAgentIds, handleDeleteSelected, agents, setSelectedAgentIds, clearSelection, panCanvas]);
+  }, [selectedAgentIds, selectedProjectIds, handleDeleteSelected, handleDeployAgent, isDeploying, agents, projects, setSelectedAgentIds, clearSelection, panCanvas]);
 
   // Initialize renderer
   useEffect(() => {
@@ -311,15 +360,22 @@ export function FactorioCanvas() {
 
     // Add project nodes from factory store
     projects.forEach((project) => {
+      // Calculate size based on file count (2x2 minimum, scales linearly)
+      // ~100 files = 2x2, ~500 files = 3x3, ~1000 files = 4x4, ~2000 files = 5x5, etc.
+      const fileCount = project.file_count ?? 0;
+      const size = Math.max(2, Math.min(8, Math.floor(2 + fileCount / 400)));
+
       const resourceEntity: ResourceEntity = {
         id: project.id,
         type: "resource",
         gridX: project.grid_x,
         gridY: project.grid_y,
-        width: 2,
-        height: 2,
+        width: size,
+        height: size,
         path: project.path,
         name: project.name,
+        fileCount: project.file_count,
+        colorIndex: project.color_index,
       };
       entities.push(resourceEntity);
     });
@@ -348,7 +404,9 @@ export function FactorioCanvas() {
     });
 
     renderer.setEntities(entities);
-    renderer.setSelectedIds(selectedAgentIds);
+    // Combine agent and project selections
+    const allSelectedIds = new Set([...selectedAgentIds, ...selectedProjectIds]);
+    renderer.setSelectedIds(allSelectedIds);
 
     // Build connections map from agent placements
     const connections = new Map<string, string>();
@@ -358,7 +416,7 @@ export function FactorioCanvas() {
       }
     }
     renderer.setConnections(connections);
-  }, [agents, selectedAgentIds, projects, agentPlacements, isLoaded, getAgentPlacement, findNextAvailablePosition, setAgentPlacement]);
+  }, [agents, selectedAgentIds, selectedProjectIds, projects, agentPlacements, isLoaded, getAgentPlacement, findNextAvailablePosition, setAgentPlacement]);
 
   // Handle adding a project via dialog
   const handleAddProject = useCallback(async (worldX: number, worldY: number) => {
@@ -379,29 +437,6 @@ export function FactorioCanvas() {
       console.error("Failed to open folder dialog:", error);
     }
   }, [addProject]);
-
-  // Handle deploying an agent to a project
-  const handleDeployAgent = useCallback(async (projectId: string) => {
-    const project = projects.get(projectId);
-    if (!project) return;
-
-    setIsDeploying(true);
-    setShowDeployDialog(false);
-
-    try {
-      const agentName = `Agent-${project.name}`;
-      const agent = await spawnAgent(agentName, project.path);
-
-      // Place the agent near the project and persist metadata
-      const agentPos = findNextAvailablePosition();
-      setAgentPlacement(agent.id, agentPos.x, agentPos.y, projectId, agentName, project.path);
-    } catch (error) {
-      console.error("Failed to deploy agent:", error);
-    } finally {
-      setIsDeploying(false);
-    }
-  }, [projects, spawnAgent, findNextAvailablePosition, setAgentPlacement]);
-
   // Mouse handlers
   const handleMouseDown = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -424,9 +459,28 @@ export function FactorioCanvas() {
 
       if (e.button === 0) { // Left click
         if (entity) {
+          const multiSelect = e.ctrlKey || e.metaKey || e.shiftKey;
+
           if (entity.type === "agent") {
-            const multiSelect = e.ctrlKey || e.metaKey || e.shiftKey;
+            if (!multiSelect) {
+              setSelectedProjectIds(new Set());
+            }
             selectAgent(entity.id, multiSelect);
+          } else if (entity.type === "resource") {
+            if (!multiSelect) {
+              clearSelection();
+              setSelectedProjectIds(new Set([entity.id]));
+            } else {
+              setSelectedProjectIds(prev => {
+                const newSet = new Set(prev);
+                if (newSet.has(entity.id)) {
+                  newSet.delete(entity.id);
+                } else {
+                  newSet.add(entity.id);
+                }
+                return newSet;
+              });
+            }
           }
           // Set up pending drag - actual drag starts after threshold
           setPendingDrag({
@@ -443,6 +497,7 @@ export function FactorioCanvas() {
             // Start box selection
             if (!e.ctrlKey && !e.metaKey) {
               clearSelection();
+              setSelectedProjectIds(new Set());
             }
             setSelectionBox({
               startX: x,
@@ -454,6 +509,7 @@ export function FactorioCanvas() {
             // Start panning
             if (!e.ctrlKey && !e.metaKey) {
               clearSelection();
+              setSelectedProjectIds(new Set());
             }
             setIsPanning(true);
             setPanStart({ x: e.clientX, y: e.clientY });
@@ -757,7 +813,7 @@ export function FactorioCanvas() {
             >
               Add Project
             </button>
-            {selectedAgentIds.size > 0 && (
+            {(selectedAgentIds.size > 0 || selectedProjectIds.size > 0) && (
               <button
                 className="factorio-context-menu__item factorio-context-menu__item--danger"
                 onClick={() => {
@@ -765,7 +821,7 @@ export function FactorioCanvas() {
                   handleDeleteSelected();
                 }}
               >
-                Delete Selected ({selectedAgentIds.size})
+                Delete Selected ({selectedAgentIds.size + selectedProjectIds.size})
               </button>
             )}
           </div>

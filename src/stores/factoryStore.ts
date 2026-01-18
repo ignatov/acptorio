@@ -7,6 +7,8 @@ export interface ProjectNode {
   name: string;
   grid_x: number;
   grid_y: number;
+  file_count?: number;
+  color_index?: number;
 }
 
 export interface AgentPlacement {
@@ -37,12 +39,14 @@ interface FactoryState {
   agentPlacements: Map<string, AgentPlacement>;
   viewport: FactoryViewport;
   isLoaded: boolean;
+  nextColorIndex: number;
 
   // Project actions
   addProject: (path: string, gridX?: number, gridY?: number) => Promise<ProjectNode>;
   removeProject: (id: string) => Promise<void>;
   moveProject: (id: string, gridX: number, gridY: number) => Promise<void>;
   getProjectByPath: (path: string) => ProjectNode | undefined;
+  fetchFileCount: (projectId: string) => Promise<void>;
 
   // Agent placement actions
   setAgentPlacement: (agentId: string, gridX: number, gridY: number, connectedProjectId?: string | null, name?: string | null, workingDirectory?: string | null) => Promise<void>;
@@ -91,9 +95,10 @@ export const useFactoryStore = create<FactoryState>((set, get) => ({
   agentPlacements: new Map(),
   viewport: { offset_x: 0, offset_y: 0, zoom: 1 },
   isLoaded: false,
+  nextColorIndex: 0,
 
   addProject: async (path, gridX, gridY) => {
-    const { projects, findNextAvailablePosition } = get();
+    const { projects, findNextAvailablePosition, nextColorIndex } = get();
 
     // Check if project already exists
     for (const project of projects.values()) {
@@ -108,6 +113,7 @@ export const useFactoryStore = create<FactoryState>((set, get) => ({
 
     const id = generateId();
     const name = getNameFromPath(path);
+    const colorIndex = nextColorIndex;
 
     try {
       const layout = await invoke<FactoryLayout>("add_factory_project", {
@@ -116,10 +122,18 @@ export const useFactoryStore = create<FactoryState>((set, get) => ({
         name,
         gridX: position.x,
         gridY: position.y,
+        colorIndex,
       });
 
       const updated = updateFromLayout(layout);
-      set({ projects: updated.projects, agentPlacements: updated.agentPlacements });
+      set({
+        projects: updated.projects,
+        agentPlacements: updated.agentPlacements,
+        nextColorIndex: nextColorIndex + 1,
+      });
+
+      // Fetch file count asynchronously (don't block)
+      get().fetchFileCount(id);
 
       return updated.projects.get(id)!;
     } catch (error) {
@@ -166,6 +180,26 @@ export const useFactoryStore = create<FactoryState>((set, get) => ({
       }
     }
     return undefined;
+  },
+
+  fetchFileCount: async (projectId) => {
+    const { projects } = get();
+    const project = projects.get(projectId);
+    if (!project) return;
+
+    try {
+      const fileCount = await invoke<number>("count_files", { path: project.path });
+      const layout = await invoke<FactoryLayout>("update_factory_project", {
+        projectId,
+        fileCount,
+        colorIndex: null,
+      });
+
+      const updated = updateFromLayout(layout);
+      set({ projects: updated.projects, agentPlacements: updated.agentPlacements });
+    } catch (error) {
+      console.error("Failed to fetch file count:", error);
+    }
   },
 
   setAgentPlacement: async (agentId, gridX, gridY, connectedProjectId = null, name = null, workingDirectory = null) => {
@@ -272,12 +306,29 @@ export const useFactoryStore = create<FactoryState>((set, get) => ({
       const layout = await invoke<FactoryLayout>("get_factory_layout");
 
       const updated = updateFromLayout(layout);
+
+      // Calculate next color index from existing projects
+      let maxColorIndex = -1;
+      for (const project of updated.projects.values()) {
+        if (project.color_index !== undefined && project.color_index > maxColorIndex) {
+          maxColorIndex = project.color_index;
+        }
+      }
+
       set({
         projects: updated.projects,
         agentPlacements: updated.agentPlacements,
         viewport: updated.viewport,
         isLoaded: true,
+        nextColorIndex: maxColorIndex + 1,
       });
+
+      // Fetch file counts for projects that don't have them
+      for (const project of updated.projects.values()) {
+        if (project.file_count === undefined || project.file_count === null) {
+          get().fetchFileCount(project.id);
+        }
+      }
     } catch (error) {
       console.error("Failed to load factory layout:", error);
       set({ isLoaded: true });

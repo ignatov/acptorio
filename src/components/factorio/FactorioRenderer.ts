@@ -6,7 +6,7 @@ import {
   type Viewport,
 } from "./grid";
 import type { AgentInfo } from "../../types";
-import { getSpriteManager, getAnimationFrame, type SpriteManager, PALETTE } from "./sprites";
+import { getSpriteManager, getAnimationFrame, type SpriteManager, PALETTE, PROJECT_COLORS } from "./sprites";
 import { BeltRouter, type BeltPath } from "./BeltRouter";
 
 // Colors matching Factorio style
@@ -52,6 +52,8 @@ export interface ResourceEntity extends EntityPosition {
   type: "resource";
   path: string;
   name: string;
+  fileCount?: number;
+  colorIndex?: number;
 }
 
 export type Entity = AgentEntity | ResourceEntity;
@@ -450,72 +452,92 @@ export class FactorioRenderer {
   }
 
   private drawResourceNode(entity: ResourceEntity, gridX: number, gridY: number): void {
-    const { ctx, viewport, animationTime, spriteManager } = this;
-    const { width, height, name } = entity;
+    const { ctx, viewport, animationTime, selectedIds, hoveredId } = this;
+    const { id, width, height, name, colorIndex, fileCount } = entity;
 
     const screenPos = worldToScreen(gridX * TILE_SIZE, gridY * TILE_SIZE, viewport);
     const screenWidth = width * TILE_SIZE * viewport.zoom;
     const screenHeight = height * TILE_SIZE * viewport.zoom;
 
-    // Try to use sprite if available
-    const spriteSet = spriteManager?.getSprite("ore");
-    if (spriteSet) {
-      const frame = getAnimationFrame(spriteSet.idle, animationTime);
+    const isSelected = selectedIds.has(id);
+    const isHovered = hoveredId === id;
 
-      // Draw sprite
-      ctx.imageSmoothingEnabled = false;
-      ctx.drawImage(frame, screenPos.x, screenPos.y, screenWidth, screenHeight);
+    // Get color based on colorIndex
+    const colors = PROJECT_COLORS[colorIndex !== undefined ? colorIndex % PROJECT_COLORS.length : 0];
 
-      // Border
-      ctx.strokeStyle = COLORS.resourceBorder;
-      ctx.lineWidth = 2;
-      ctx.setLineDash([5, 5]);
-      ctx.strokeRect(screenPos.x, screenPos.y, screenWidth, screenHeight);
-      ctx.setLineDash([]);
-    } else {
-      // Fallback to primitive rendering
-      const oreColor = COLORS.resourceNode;
-      const borderColor = COLORS.resourceBorder;
+    // Draw ore chunks with project-specific color
+    const dotSize = 12 * viewport.zoom;
+    const spacing = 18 * viewport.zoom;
 
-      ctx.fillStyle = oreColor;
-      const dotSize = 12 * viewport.zoom;
-      const spacing = 20 * viewport.zoom;
+    // Ore deposit positions (irregular pattern)
+    const seed = (gridX * 73856093 + gridY * 19349663) >>> 0;
+    const pseudoRandom = (i: number) => {
+      const x = Math.sin(seed + i * 127.1) * 43758.5453;
+      return x - Math.floor(x);
+    };
 
-      for (let dx = spacing; dx < screenWidth - spacing; dx += spacing) {
-        for (let dy = spacing; dy < screenHeight - spacing; dy += spacing) {
-          const offsetX = (Math.sin(dx * 0.1) * 4) * viewport.zoom;
-          const offsetY = (Math.cos(dy * 0.1) * 4) * viewport.zoom;
+    let chunkIndex = 0;
+    for (let dx = spacing; dx < screenWidth - spacing * 0.5; dx += spacing) {
+      for (let dy = spacing; dy < screenHeight - spacing * 0.5; dy += spacing) {
+        const shimmer = Math.sin((animationTime / 400 + chunkIndex * 0.7)) * 0.3 + 0.7;
+        const offsetX = (pseudoRandom(chunkIndex) - 0.5) * 8 * viewport.zoom;
+        const offsetY = (pseudoRandom(chunkIndex + 100) - 0.5) * 8 * viewport.zoom;
+        const size = dotSize * (0.7 + pseudoRandom(chunkIndex + 200) * 0.5);
 
-          ctx.beginPath();
-          ctx.arc(
-            screenPos.x + dx + offsetX,
-            screenPos.y + dy + offsetY,
-            dotSize * (0.8 + Math.random() * 0.4),
-            0,
-            Math.PI * 2
-          );
-          ctx.fill();
-        }
+        // Shadow
+        ctx.fillStyle = "rgba(0,0,0,0.3)";
+        ctx.beginPath();
+        ctx.ellipse(
+          screenPos.x + dx + offsetX + 2,
+          screenPos.y + dy + offsetY + 2,
+          size * 0.6, size * 0.4, 0, 0, Math.PI * 2
+        );
+        ctx.fill();
+
+        // Main chunk with color variation
+        const colorVariant = shimmer > 0.8 ? colors.light : shimmer < 0.5 ? colors.dark : colors.main;
+        ctx.fillStyle = colorVariant;
+        ctx.beginPath();
+        ctx.ellipse(
+          screenPos.x + dx + offsetX,
+          screenPos.y + dy + offsetY,
+          size * 0.5, size * 0.35, pseudoRandom(chunkIndex + 300) * Math.PI, 0, Math.PI * 2
+        );
+        ctx.fill();
+
+        chunkIndex++;
       }
-
-      ctx.strokeStyle = borderColor;
-      ctx.lineWidth = 2;
-      ctx.setLineDash([5, 5]);
-      ctx.strokeRect(screenPos.x, screenPos.y, screenWidth, screenHeight);
-      ctx.setLineDash([]);
     }
 
-    // Label (always draw with shadow)
+    // Border with project color
+    ctx.strokeStyle = colors.light;
+    ctx.lineWidth = 2;
+    ctx.setLineDash([5, 5]);
+    ctx.strokeRect(screenPos.x, screenPos.y, screenWidth, screenHeight);
+    ctx.setLineDash([]);
+
+    // Draw selection/hover brackets (Factorio yellow style)
+    if (isSelected || isHovered) {
+      ctx.strokeStyle = isSelected ? COLORS.machineBorderSelected : COLORS.machineBorder;
+      ctx.lineWidth = isSelected ? 3 : 2;
+      const cornerSize = Math.min(screenWidth, screenHeight) * 0.2;
+      this.drawSelectionBrackets(ctx, screenPos.x, screenPos.y, screenWidth, screenHeight, cornerSize);
+    }
+
+    // Label with file count
     const labelX = screenPos.x + screenWidth / 2;
     const labelY = screenPos.y + screenHeight + 14 * viewport.zoom;
     ctx.font = `bold ${11 * viewport.zoom}px "JetBrains Mono", monospace`;
     ctx.textAlign = "center";
+
+    const displayName = fileCount !== undefined ? `${name} (${fileCount})` : name;
+
     // Shadow
     ctx.fillStyle = COLORS.textShadow;
-    ctx.fillText(name, labelX + 1, labelY + 1);
+    ctx.fillText(displayName, labelX + 1, labelY + 1);
     // Text
     ctx.fillStyle = COLORS.text;
-    ctx.fillText(name, labelX, labelY);
+    ctx.fillText(displayName, labelX, labelY);
   }
 
   private drawSelectionBrackets(
