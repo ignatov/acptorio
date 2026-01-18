@@ -74,6 +74,7 @@ pub async fn set_agent_placement(
     connected_project_id: Option<String>,
     name: Option<String>,
     working_directory: Option<String>,
+    provider_id: Option<String>,
 ) -> Result<FactoryLayout, String> {
     let placement = AgentPlacement {
         agent_id,
@@ -82,6 +83,7 @@ pub async fn set_agent_placement(
         connected_project_id,
         name,
         working_directory,
+        provider_id,
     };
     state.factory.set_agent_placement(placement).await
 }

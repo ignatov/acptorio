@@ -71,8 +71,30 @@ export const PROJECT_COLORS = [
   { main: "#4a9f9f", light: "#6fbfbf", dark: "#2d6b6b" }, // Cyan
 ];
 
+// Provider brand colors for agent machines
+export const PROVIDER_COLORS: Record<string, { main: string; light: string; dark: string }> = {
+  "claude": { main: "#D97706", light: "#F59E0B", dark: "#B45309" },
+  "codex-acp": { main: "#10A37F", light: "#34D399", dark: "#059669" },
+  "gemini": { main: "#4285F4", light: "#60A5FA", dark: "#2563EB" },
+  "github-copilot": { main: "#6E7681", light: "#8B949E", dark: "#484F58" },
+  "mistral-vibe": { main: "#F97316", light: "#FB923C", dark: "#EA580C" },
+  "auggie": { main: "#8B5CF6", light: "#A78BFA", dark: "#7C3AED" },
+  "qwen-code": { main: "#6366F1", light: "#818CF8", dark: "#4F46E5" },
+  "opencode": { main: "#06B6D4", light: "#22D3EE", dark: "#0891B2" },
+};
+
+// Get provider color with fallback to default brass
+export function getProviderColors(providerId: string | null | undefined): { main: string; light: string; dark: string } {
+  if (providerId && PROVIDER_COLORS[providerId]) {
+    return PROVIDER_COLORS[providerId];
+  }
+  // Default to brass (original assembler color)
+  return { main: PALETTE.machineBrass, light: PALETTE.machineBrassLight, dark: PALETTE.machineBrassDark };
+}
+
 export class SpriteManager {
   private sprites: Map<string, SpriteSet> = new Map();
+  private providerSprites: Map<string, SpriteSet> = new Map();
   private ready: boolean = false;
   private tileSize: number;
   private terrainTiles: ImageBitmap[] = [];
@@ -95,6 +117,40 @@ export class SpriteManager {
 
   getSprite(name: string): SpriteSet | undefined {
     return this.sprites.get(name);
+  }
+
+  /**
+   * Get or generate provider-specific assembler sprites
+   */
+  async getProviderSprite(providerId: string): Promise<SpriteSet | undefined> {
+    // Check cache first
+    if (this.providerSprites.has(providerId)) {
+      return this.providerSprites.get(providerId);
+    }
+
+    // Generate sprites with provider colors
+    const colors = getProviderColors(providerId);
+    const spriteSet = await this.generateColoredAssemblerSprites(colors);
+    this.providerSprites.set(providerId, spriteSet);
+    return spriteSet;
+  }
+
+  /**
+   * Check if provider sprites are cached
+   */
+  hasProviderSprite(providerId: string): boolean {
+    return this.providerSprites.has(providerId);
+  }
+
+  /**
+   * Preload sprites for a provider
+   */
+  async preloadProviderSprite(providerId: string): Promise<void> {
+    if (!this.providerSprites.has(providerId)) {
+      const colors = getProviderColors(providerId);
+      const spriteSet = await this.generateColoredAssemblerSprites(colors);
+      this.providerSprites.set(providerId, spriteSet);
+    }
   }
 
   getTerrainTile(x: number = 0, y: number = 0): ImageBitmap | null {
@@ -208,6 +264,39 @@ export class SpriteManager {
     });
   }
 
+  private async generateColoredAssemblerSprites(
+    colors: { main: string; light: string; dark: string }
+  ): Promise<SpriteSet> {
+    const size = this.tileSize * 2;
+
+    // Generate idle frames with custom colors
+    const idleFrames: ImageBitmap[] = [];
+    for (let i = 0; i < 4; i++) {
+      const canvas = this.createColoredAssemblerFrame(size, "idle", i, colors);
+      idleFrames.push(await createImageBitmap(canvas));
+    }
+
+    // Generate working frames with custom colors
+    const workingFrames: ImageBitmap[] = [];
+    for (let i = 0; i < 8; i++) {
+      const canvas = this.createColoredAssemblerFrame(size, "working", i, colors);
+      workingFrames.push(await createImageBitmap(canvas));
+    }
+
+    // Generate error frames with custom colors
+    const errorFrames: ImageBitmap[] = [];
+    for (let i = 0; i < 4; i++) {
+      const canvas = this.createColoredAssemblerFrame(size, "error", i, colors);
+      errorFrames.push(await createImageBitmap(canvas));
+    }
+
+    return {
+      idle: { frames: idleFrames, frameTime: 500, currentFrame: 0 },
+      working: { frames: workingFrames, frameTime: 80, currentFrame: 0 },
+      error: { frames: errorFrames, frameTime: 250, currentFrame: 0 },
+    };
+  }
+
   private createAssemblerFrame(
     size: number,
     state: "idle" | "working" | "error",
@@ -313,6 +402,120 @@ export class SpriteManager {
       ctx.arc(x*p, y*p, 1.5*p, 0, Math.PI * 2);
       ctx.fill();
     });
+
+    return canvas;
+  }
+
+  private createColoredAssemblerFrame(
+    size: number,
+    state: "idle" | "working" | "error",
+    frameIndex: number,
+    colors: { main: string; light: string; dark: string }
+  ): HTMLCanvasElement {
+    const canvas = document.createElement("canvas");
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext("2d")!;
+
+    const p = size / 32; // Pixel size
+
+    // Shadow
+    ctx.fillStyle = "rgba(0,0,0,0.4)";
+    this.roundRect(ctx, 3*p, 3*p, 28*p, 28*p, 2*p);
+    ctx.fill();
+
+    // Main machine body - dark frame
+    ctx.fillStyle = PALETTE.machineFrame;
+    this.roundRect(ctx, 1*p, 1*p, 28*p, 28*p, 2*p);
+    ctx.fill();
+
+    // Inner panel with provider color
+    ctx.fillStyle = colors.main;
+    this.roundRect(ctx, 3*p, 3*p, 24*p, 24*p, 1*p);
+    ctx.fill();
+
+    // Darker inner section with provider dark color
+    ctx.fillStyle = colors.dark;
+    ctx.fillRect(5*p, 5*p, 20*p, 16*p);
+
+    // Top highlight with provider light color
+    ctx.fillStyle = colors.light;
+    ctx.fillRect(3*p, 3*p, 24*p, 2*p);
+
+    // Central mechanism window
+    ctx.fillStyle = PALETTE.machineFrameDark;
+    ctx.fillRect(8*p, 7*p, 14*p, 10*p);
+
+    // Gear mechanism in center
+    const centerX = 15 * p;
+    const centerY = 12 * p;
+
+    if (state === "working") {
+      const rotation = (frameIndex / 8) * Math.PI * 2;
+
+      // Glowing effect
+      ctx.fillStyle = "rgba(127, 255, 0, 0.2)";
+      ctx.fillRect(8*p, 7*p, 14*p, 10*p);
+
+      // Animated gear
+      this.drawGear(ctx, centerX, centerY, 4*p, rotation, PALETTE.machineGlow);
+      this.drawGear(ctx, centerX - 5*p, centerY, 2.5*p, -rotation * 1.5, PALETTE.machineGear);
+      this.drawGear(ctx, centerX + 5*p, centerY, 2.5*p, -rotation * 1.5, PALETTE.machineGear);
+    } else if (state === "error") {
+      const pulse = Math.sin(frameIndex / 2 * Math.PI) * 0.5 + 0.5;
+      ctx.fillStyle = `rgba(255, 68, 68, ${0.3 + pulse * 0.4})`;
+      ctx.fillRect(8*p, 7*p, 14*p, 10*p);
+
+      // Error X
+      ctx.strokeStyle = PALETTE.machineError;
+      ctx.lineWidth = 2*p;
+      ctx.beginPath();
+      ctx.moveTo(10*p, 9*p);
+      ctx.lineTo(20*p, 15*p);
+      ctx.moveTo(20*p, 9*p);
+      ctx.lineTo(10*p, 15*p);
+      ctx.stroke();
+    } else {
+      // Idle - static gears
+      this.drawGear(ctx, centerX, centerY, 4*p, 0, PALETTE.machineGear);
+      this.drawGear(ctx, centerX - 5*p, centerY, 2.5*p, Math.PI/6, PALETTE.machineGear);
+      this.drawGear(ctx, centerX + 5*p, centerY, 2.5*p, Math.PI/6, PALETTE.machineGear);
+    }
+
+    // Pipes on sides
+    ctx.fillStyle = PALETTE.machinePipe;
+    // Left pipe
+    ctx.fillRect(0, 12*p, 3*p, 6*p);
+    ctx.fillStyle = PALETTE.machineFrameLight;
+    ctx.fillRect(0, 12*p, 3*p, 1*p);
+    // Right pipe
+    ctx.fillStyle = PALETTE.machinePipe;
+    ctx.fillRect(27*p, 12*p, 3*p, 6*p);
+    ctx.fillStyle = PALETTE.machineFrameLight;
+    ctx.fillRect(27*p, 12*p, 3*p, 1*p);
+
+    // Bottom panel with progress
+    ctx.fillStyle = PALETTE.machineFrameDark;
+    ctx.fillRect(5*p, 22*p, 20*p, 4*p);
+
+    // Progress bar
+    if (state === "working") {
+      const progress = frameIndex / 8;
+      ctx.fillStyle = PALETTE.machineGlow;
+      ctx.fillRect(6*p, 23*p, Math.floor(18 * progress)*p, 2*p);
+    }
+
+    // Corner bolts
+    ctx.fillStyle = PALETTE.machineFrameLight;
+    [[4, 4], [26, 4], [4, 26], [26, 26]].forEach(([x, y]) => {
+      ctx.beginPath();
+      ctx.arc(x*p, y*p, 1.5*p, 0, Math.PI * 2);
+      ctx.fill();
+    });
+
+    // Provider color accent bar at bottom
+    ctx.fillStyle = colors.main;
+    ctx.fillRect(3*p, 26*p, 24*p, 2*p);
 
     return canvas;
   }

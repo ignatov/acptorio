@@ -6,6 +6,12 @@ export type AgentStatus =
   | "error"
   | "stopped";
 
+export interface AuthMethod {
+  id: string;
+  name: string;
+  description?: string | null;
+}
+
 export interface AgentInfo {
   id: string;
   name: string;
@@ -17,6 +23,10 @@ export interface AgentInfo {
   tokens_used: number;
   token_limit: number;
   pending_inputs: PendingInput[];
+  provider_id?: string | null;
+  provider_name?: string | null;
+  auth_methods?: AuthMethod[];
+  needs_auth?: boolean;
 }
 
 export type PendingInputType = "tool_permission" | "user_question" | "confirmation";

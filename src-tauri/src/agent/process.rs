@@ -2,7 +2,7 @@ use crate::acp::{
     AsyncCodec, InitializeParams, JsonRpcMessage, JsonRpcRequest, JsonRpcResponse,
     PromptContent, RequestPermissionRequest, RequestPermissionResponse,
     SessionNewParams, SessionNewResult, SessionPromptParams, SessionUpdate, SessionUpdateNotification,
-    LegacySessionUpdateNotification, ToolCallStatus,
+    LegacySessionUpdateNotification, ToolCallStatus, AuthMethod, AuthStartParams, AuthStartResult,
 };
 use super::pool::PendingPermissions;
 use serde::{Deserialize, Serialize};
@@ -27,6 +27,14 @@ pub struct AgentInfo {
     pub tokens_used: u64,
     pub token_limit: u64,
     pub pending_inputs: Vec<PendingInput>,
+    #[serde(default)]
+    pub provider_id: Option<String>,
+    #[serde(default)]
+    pub provider_name: Option<String>,
+    #[serde(default)]
+    pub auth_methods: Vec<AuthMethod>,
+    #[serde(default)]
+    pub needs_auth: bool,
 }
 
 /// Represents a pending input request from the agent (permission, question, etc.)
@@ -78,23 +86,43 @@ pub struct AgentProcess {
     pub progress: f64,
     pub tokens_used: u64,
     pub pending_inputs: Vec<PendingInput>,
+    pub provider_id: Option<String>,
+    pub provider_name: Option<String>,
+    pub auth_methods: Vec<AuthMethod>,
+    pub needs_auth: bool,
+}
+
+/// Configuration for spawning an agent
+#[derive(Debug, Clone)]
+pub struct SpawnConfig {
+    pub name: String,
+    pub working_directory: String,
+    pub provider_id: Option<String>,
+    pub provider_name: Option<String>,
+    pub command: String,
+    pub args: Vec<String>,
 }
 
 impl AgentProcess {
-    pub async fn spawn(
-        name: String,
-        working_directory: String,
-    ) -> Result<Self, AgentProcessError> {
+    /// Spawn an agent with the given configuration
+    pub async fn spawn_with_config(config: SpawnConfig) -> Result<Self, AgentProcessError> {
         let id = Uuid::new_v4();
 
-        let mut child = Command::new("npx")
-            .arg("@zed-industries/claude-code-acp@latest")
+        info!(
+            "Spawning agent {} with command: {} {:?}",
+            config.name, config.command, config.args
+        );
+
+        let mut cmd = Command::new(&config.command);
+        cmd.args(&config.args)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
-            .current_dir(&working_directory)
+            .current_dir(&config.working_directory);
+
+        let mut child = cmd
             .spawn()
-            .map_err(|e| AgentProcessError::SpawnFailed(e.to_string()))?;
+            .map_err(|e| AgentProcessError::SpawnFailed(format!("{}: {}", config.command, e)))?;
 
         let stdin = child
             .stdin
@@ -109,18 +137,38 @@ impl AgentProcess {
 
         Ok(Self {
             id,
-            name,
+            name: config.name,
             child,
             codec,
             request_id: AtomicI64::new(1),
             session_id: None,
-            working_directory,
+            working_directory: config.working_directory,
             status: AgentStatus::Initializing,
             current_file: None,
             progress: 0.0,
             tokens_used: 0,
             pending_inputs: Vec::new(),
+            provider_id: config.provider_id,
+            provider_name: config.provider_name,
+            auth_methods: Vec::new(),
+            needs_auth: false,
         })
+    }
+
+    /// Spawn an agent with default Claude provider (backward compatible)
+    pub async fn spawn(
+        name: String,
+        working_directory: String,
+    ) -> Result<Self, AgentProcessError> {
+        Self::spawn_with_config(SpawnConfig {
+            name,
+            working_directory,
+            provider_id: Some("claude".to_string()),
+            provider_name: Some("Claude".to_string()),
+            command: "npx".to_string(),
+            args: vec!["@zed-industries/claude-code-acp@latest".to_string()],
+        })
+        .await
     }
 
     fn next_request_id(&self) -> i64 {
@@ -155,6 +203,15 @@ impl AgentProcess {
                             resp.error.unwrap().message,
                         ));
                     }
+                    // Parse authMethods from the result if present
+                    if let Some(result) = &resp.result {
+                        if let Some(auth_methods) = result.get("authMethods") {
+                            if let Ok(methods) = serde_json::from_value::<Vec<AuthMethod>>(auth_methods.clone()) {
+                                info!("Agent has {} auth methods available", methods.len());
+                                self.auth_methods = methods;
+                            }
+                        }
+                    }
                     break;
                 }
             }
@@ -172,6 +229,63 @@ impl AgentProcess {
 
         self.status = AgentStatus::Idle;
         Ok(())
+    }
+
+    /// Start authentication with a specific auth method
+    pub async fn start_auth(&mut self, auth_method_id: &str) -> Result<AuthStartResult, AgentProcessError> {
+        // Build params as raw JSON - Codex CLI expects "methodId"
+        let params = serde_json::json!({
+            "methodId": auth_method_id
+        });
+
+        let request = JsonRpcRequest::new(
+            self.next_request_id(),
+            "authenticate",
+            Some(params),
+        );
+
+        let json = serde_json::to_string(&request).unwrap();
+        info!("Starting auth with method: {} - request: {}", auth_method_id, json);
+        println!("[AUTH] Sending auth request: {}", json);
+        self.codec
+            .write_message(&json)
+            .await
+            .map_err(|e| AgentProcessError::CommunicationError(e.to_string()))?;
+
+        // Wait for authenticate response
+        loop {
+            if let Some(msg) = self
+                .codec
+                .read_message()
+                .await
+                .map_err(|e| AgentProcessError::CommunicationError(e.to_string()))?
+            {
+                println!("[AUTH] Received message: {:?}", msg);
+                if let JsonRpcMessage::Response(resp) = msg {
+                    if let Some(err) = resp.error {
+                        println!("[AUTH] Error response: {:?}", err);
+                        return Err(AgentProcessError::AuthFailed(err.message));
+                    }
+                    if let Some(result) = resp.result {
+                        println!("[AUTH] Success result: {:?}", result);
+                        let auth_result: AuthStartResult = serde_json::from_value(result.clone())
+                            .map_err(|e| {
+                                println!("[AUTH] Failed to parse result: {} - raw: {:?}", e, result);
+                                AgentProcessError::CommunicationError(e.to_string())
+                            })?;
+
+                        if auth_result.completed {
+                            self.needs_auth = false;
+                            info!("Auth completed immediately");
+                        } else if auth_result.url.is_some() {
+                            info!("Auth requires browser: {:?}", auth_result.url);
+                        }
+
+                        return Ok(auth_result);
+                    }
+                }
+            }
+        }
     }
 
     pub async fn create_session(&mut self) -> Result<String, AgentProcessError> {
@@ -202,6 +316,12 @@ impl AgentProcess {
             {
                 if let JsonRpcMessage::Response(resp) = msg {
                     if let Some(err) = resp.error {
+                        // Check if it's an auth-required error
+                        let msg_lower = err.message.to_lowercase();
+                        if msg_lower.contains("auth") || msg_lower.contains("login") || msg_lower.contains("credential") {
+                            self.needs_auth = true;
+                            return Err(AgentProcessError::AuthRequired);
+                        }
                         return Err(AgentProcessError::SessionCreateFailed(err.message));
                     }
                     if let Some(result) = resp.result {
@@ -210,6 +330,7 @@ impl AgentProcess {
                                 AgentProcessError::CommunicationError(e.to_string())
                             })?;
                         self.session_id = Some(session_result.session_id.clone());
+                        self.needs_auth = false;
                         return Ok(session_result.session_id);
                     }
                 }
@@ -784,6 +905,10 @@ impl AgentProcess {
             tokens_used: self.tokens_used,
             token_limit: 100000,
             pending_inputs: self.pending_inputs.clone(),
+            provider_id: self.provider_id.clone(),
+            provider_name: self.provider_name.clone(),
+            auth_methods: self.auth_methods.clone(),
+            needs_auth: self.needs_auth,
         }
     }
 
@@ -845,4 +970,8 @@ pub enum AgentProcessError {
     PromptFailed(String),
     #[error("Stop failed: {0}")]
     StopFailed(String),
+    #[error("Authentication failed: {0}")]
+    AuthFailed(String),
+    #[error("Authentication required")]
+    AuthRequired,
 }

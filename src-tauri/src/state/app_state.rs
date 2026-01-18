@@ -1,5 +1,6 @@
 use crate::agent::AgentPool;
 use crate::filesystem::{FogOfWar, ProjectScanner, ProjectTree};
+use crate::registry::RegistryService;
 use crate::state::factory::FactoryStore;
 use crate::state::metrics::MetricsTracker;
 use std::path::PathBuf;
@@ -14,6 +15,7 @@ pub struct AppState {
     pub metrics: Arc<MetricsTracker>,
     pub scanner: ProjectScanner,
     pub factory: Arc<FactoryStore>,
+    pub registry: Arc<RegistryService>,
 }
 
 impl AppState {
@@ -26,6 +28,7 @@ impl AppState {
             metrics: Arc::new(MetricsTracker::new()),
             scanner: ProjectScanner::new(),
             factory: Arc::new(FactoryStore::new()),
+            registry: Arc::new(RegistryService::new()),
         }
     }
 

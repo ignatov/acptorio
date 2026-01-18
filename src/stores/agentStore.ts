@@ -30,10 +30,11 @@ interface AgentState {
   handleAgentUpdate: (update: AgentUpdate) => void;
 
   // Async actions
-  spawnAgent: (name: string, workingDirectory: string) => Promise<AgentInfo>;
+  spawnAgent: (name: string, workingDirectory: string, providerId?: string) => Promise<AgentInfo>;
   stopAgent: (agentId: string) => Promise<void>;
   sendPrompt: (agentId: string, prompt: string) => Promise<string>;
   fetchAgents: () => Promise<void>;
+  refreshAgent: (agentId: string) => Promise<void>;
 }
 
 export const useAgentStore = create<AgentState>((set, get) => ({
@@ -156,16 +157,17 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     }
   },
 
-  spawnAgent: async (name, workingDirectory) => {
+  spawnAgent: async (name, workingDirectory, providerId) => {
     const agent = await invoke<AgentInfo>("spawn_agent", {
       name,
       workingDirectory,
+      providerId: providerId || null,
     });
     get().addAgent(agent);
     get().addActivityLog({
       agentId: agent.id,
       type: "status",
-      content: `Agent "${name}" deployed`,
+      content: `Agent "${name}" deployed${agent.provider_name ? ` (${agent.provider_name})` : ""}`,
     });
     return agent;
   },
@@ -206,5 +208,16 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     set({
       agents: new Map(agents.map((a) => [a.id, a])),
     });
+  },
+
+  refreshAgent: async (agentId) => {
+    const agentInfo = await invoke<AgentInfo | null>("get_agent", { agentId });
+    if (agentInfo) {
+      set((state) => {
+        const agents = new Map(state.agents);
+        agents.set(agentId, agentInfo);
+        return { agents };
+      });
+    }
   },
 }));

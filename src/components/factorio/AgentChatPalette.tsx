@@ -13,11 +13,14 @@ interface AgentChatPaletteProps {
 export function AgentChatPalette({ agent, onClose, respondedInputIds, onInputResponded }: AgentChatPaletteProps) {
   const [input, setInput] = useState("");
   const [isExecuting, setIsExecuting] = useState(false);
+  const [isAuthenticating, setIsAuthenticating] = useState(false);
+  const [authMessage, setAuthMessage] = useState<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
 
   const activityLog = useAgentStore((s) => s.activityLog);
   const sendPrompt = useAgentStore((s) => s.sendPrompt);
+  const refreshAgent = useAgentStore((s) => s.refreshAgent);
 
   // Filter activity log for this agent
   const agentMessages = activityLog.filter((entry) => entry.agentId === agent.id);
@@ -81,6 +84,57 @@ export function AgentChatPalette({ agent, onClose, respondedInputIds, onInputRes
     }
   }, [agent.id, onInputResponded]);
 
+  const handleStartAuth = useCallback(async (authMethodId: string) => {
+    setIsAuthenticating(true);
+    setAuthMessage(null);
+
+    try {
+      const result = await invoke<{ url?: string; message?: string; completed: boolean }>("start_agent_auth", {
+        agentId: agent.id,
+        authMethodId,
+      });
+
+      if (result.completed) {
+        setAuthMessage("Authentication successful! Creating session...");
+        // Try to create session immediately
+        try {
+          await invoke("retry_create_session", { agentId: agent.id });
+          setAuthMessage("Session created successfully!");
+        } catch {
+          setAuthMessage("Auth completed. Click 'Retry' to create session.");
+        }
+        await refreshAgent(agent.id);
+      } else if (result.url) {
+        setAuthMessage("Browser opened. Complete login and click 'Retry' when done.");
+      } else if (result.message) {
+        setAuthMessage(result.message + " Click 'Retry' when done.");
+      } else {
+        // Auth returned empty response - browser may have been opened internally
+        // Auto-try to create session after a short delay
+        setAuthMessage("Authenticating... Click 'Retry' when browser login is complete.");
+      }
+    } catch (error) {
+      console.error("Failed to start auth:", error);
+      setAuthMessage(`Authentication failed: ${error}`);
+    } finally {
+      setIsAuthenticating(false);
+    }
+  }, [agent.id, refreshAgent]);
+
+  const handleRetrySession = useCallback(async () => {
+    setIsAuthenticating(true);
+    try {
+      await invoke("retry_create_session", { agentId: agent.id });
+      setAuthMessage("Session created successfully!");
+      await refreshAgent(agent.id);
+    } catch (error) {
+      console.error("Failed to create session:", error);
+      setAuthMessage(`Session creation failed: ${error}`);
+    } finally {
+      setIsAuthenticating(false);
+    }
+  }, [agent.id, refreshAgent]);
+
   const getInputTypeLabel = (type: string): string => {
     switch (type) {
       case "tool_permission":
@@ -125,6 +179,44 @@ export function AgentChatPalette({ agent, onClose, respondedInputIds, onInputRes
           ×
         </button>
       </div>
+
+      {/* Authentication Section */}
+      {agent.needs_auth && agent.auth_methods && agent.auth_methods.length > 0 && (
+        <div className="agent-chat-palette__auth">
+          <div className="agent-chat-palette__auth-label">
+            Authentication Required
+          </div>
+          <div className="agent-chat-palette__auth-message">
+            This agent requires authentication to work. Choose an auth method:
+          </div>
+          <div className="agent-chat-palette__auth-methods">
+            {agent.auth_methods.map((method) => (
+              <button
+                key={method.id}
+                className="agent-chat-palette__btn agent-chat-palette__btn--auth"
+                onClick={() => handleStartAuth(method.id)}
+                disabled={isAuthenticating}
+              >
+                {method.name}
+              </button>
+            ))}
+          </div>
+          {authMessage && (
+            <div className="agent-chat-palette__auth-status">
+              {authMessage}
+              {!authMessage.includes("successfully") && (
+                <button
+                  className="agent-chat-palette__btn agent-chat-palette__btn--retry"
+                  onClick={handleRetrySession}
+                  disabled={isAuthenticating}
+                >
+                  Retry
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Pending Inputs Section */}
       {agent.pending_inputs && agent.pending_inputs.filter(p => !respondedInputIds.has(p.id)).length > 0 && (

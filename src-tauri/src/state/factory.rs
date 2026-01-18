@@ -30,6 +30,8 @@ pub struct AgentPlacement {
     pub name: Option<String>,
     #[serde(default)]
     pub working_directory: Option<String>,
+    #[serde(default)]
+    pub provider_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,7 +92,7 @@ impl FactoryStore {
             .or_else(dirs::home_dir)
             .unwrap_or_else(|| PathBuf::from("."));
 
-        let app_dir = base.join("agent-commander");
+        let app_dir = base.join("acptorio");
         fs::create_dir_all(&app_dir).ok();
 
         app_dir.join(FACTORY_LAYOUT_FILE)
@@ -220,6 +222,9 @@ impl FactoryStore {
             }
             if placement.working_directory.is_some() {
                 existing.working_directory = placement.working_directory;
+            }
+            if placement.provider_id.is_some() {
+                existing.provider_id = placement.provider_id;
             }
         } else {
             layout.agent_placements.push(placement);

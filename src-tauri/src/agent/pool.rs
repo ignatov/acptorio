@@ -1,4 +1,4 @@
-use super::process::{AgentInfo, AgentProcess, AgentProcessError, AgentUpdate, PermissionUserResponse};
+use super::process::{AgentInfo, AgentProcess, AgentProcessError, AgentUpdate, PermissionUserResponse, SpawnConfig};
 use dashmap::DashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, Mutex};
@@ -82,7 +82,40 @@ impl AgentPool {
     ) -> Result<AgentInfo, AgentProcessError> {
         let mut agent = AgentProcess::spawn(name, working_directory).await?;
         agent.initialize().await?;
-        agent.create_session().await?;
+
+        // Try to create session - if auth required, still add agent to pool
+        match agent.create_session().await {
+            Ok(_) => {}
+            Err(AgentProcessError::AuthRequired) => {
+                // Agent needs auth - add to pool anyway so user can authenticate
+                tracing::info!("Agent requires authentication");
+            }
+            Err(e) => return Err(e),
+        }
+
+        let info = agent.info();
+        let handle = AgentHandle::new(agent);
+        self.agents.insert(info.id, handle);
+        Ok(info)
+    }
+
+    /// Spawn an agent with a custom configuration
+    pub async fn spawn_agent_with_config(
+        &self,
+        config: SpawnConfig,
+    ) -> Result<AgentInfo, AgentProcessError> {
+        let mut agent = AgentProcess::spawn_with_config(config).await?;
+        agent.initialize().await?;
+
+        // Try to create session - if auth required, still add agent to pool
+        match agent.create_session().await {
+            Ok(_) => {}
+            Err(AgentProcessError::AuthRequired) => {
+                // Agent needs auth - add to pool anyway so user can authenticate
+                tracing::info!("Agent requires authentication");
+            }
+            Err(e) => return Err(e),
+        }
 
         let info = agent.info();
         let handle = AgentHandle::new(agent);
@@ -153,6 +186,32 @@ impl AgentPool {
         // Use the shared pending_permissions directly - no agent lock needed!
         let response = PermissionUserResponse { approved, option_id };
         self.pending_permissions.respond(*agent_id, input_id, response)
+    }
+
+    /// Start authentication for an agent
+    pub async fn start_auth(
+        &self,
+        agent_id: &Uuid,
+        auth_method_id: &str,
+    ) -> Result<crate::acp::AuthStartResult, AgentProcessError> {
+        let handle = self
+            .agents
+            .get(agent_id)
+            .ok_or(AgentProcessError::NoSession)?;
+        let handle = handle.value().inner.clone();
+        let mut agent = handle.lock().await;
+        agent.start_auth(auth_method_id).await
+    }
+
+    /// Create a session for an agent (used after auth completes)
+    pub async fn create_session(&self, agent_id: &Uuid) -> Result<String, AgentProcessError> {
+        let handle = self
+            .agents
+            .get(agent_id)
+            .ok_or(AgentProcessError::NoSession)?;
+        let handle = handle.value().inner.clone();
+        let mut agent = handle.lock().await;
+        agent.create_session().await
     }
 }
 

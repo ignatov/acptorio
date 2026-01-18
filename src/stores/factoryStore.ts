@@ -19,6 +19,7 @@ export interface AgentPlacement {
   // Persisted agent metadata for restore on startup
   name?: string | null;
   working_directory?: string | null;
+  provider_id?: string | null;
 }
 
 export interface FactoryViewport {
@@ -49,7 +50,7 @@ interface FactoryState {
   fetchFileCount: (projectId: string) => Promise<void>;
 
   // Agent placement actions
-  setAgentPlacement: (agentId: string, gridX: number, gridY: number, connectedProjectId?: string | null, name?: string | null, workingDirectory?: string | null) => Promise<void>;
+  setAgentPlacement: (agentId: string, gridX: number, gridY: number, connectedProjectId?: string | null, name?: string | null, workingDirectory?: string | null, providerId?: string | null) => Promise<void>;
   removeAgentPlacement: (agentId: string) => Promise<void>;
   getAgentPlacement: (agentId: string) => AgentPlacement | undefined;
 
@@ -202,7 +203,7 @@ export const useFactoryStore = create<FactoryState>((set, get) => ({
     }
   },
 
-  setAgentPlacement: async (agentId, gridX, gridY, connectedProjectId = null, name = null, workingDirectory = null) => {
+  setAgentPlacement: async (agentId, gridX, gridY, connectedProjectId = null, name = null, workingDirectory = null, providerId = null) => {
     try {
       const layout = await invoke<FactoryLayout>("set_agent_placement", {
         agentId,
@@ -211,6 +212,7 @@ export const useFactoryStore = create<FactoryState>((set, get) => ({
         connectedProjectId,
         name,
         workingDirectory,
+        providerId,
       });
 
       const updated = updateFromLayout(layout);
@@ -242,18 +244,23 @@ export const useFactoryStore = create<FactoryState>((set, get) => ({
   findNextAvailablePosition: (preferNear) => {
     const { projects, agentPlacements } = get();
 
+    // Calculate project size based on file count (same formula as FactorioCanvas)
+    const getProjectSize = (fileCount: number | undefined | null): number => {
+      const count = fileCount ?? 0;
+      return Math.max(2, Math.min(8, Math.floor(2 + count / 400)));
+    };
+
     // Collect all occupied positions
     const occupied = new Set<string>();
     for (const project of projects.values()) {
-      // Projects are 2x2, mark all tiles
-      for (let dx = 0; dx < 2; dx++) {
-        for (let dy = 0; dy < 2; dy++) {
+      const size = getProjectSize(project.file_count);
+      for (let dx = 0; dx < size; dx++) {
+        for (let dy = 0; dy < size; dy++) {
           occupied.add(`${project.grid_x + dx},${project.grid_y + dy}`);
         }
       }
     }
     for (const placement of agentPlacements.values()) {
-      // Agents are 2x2
       for (let dx = 0; dx < 2; dx++) {
         for (let dy = 0; dy < 2; dy++) {
           occupied.add(`${placement.grid_x + dx},${placement.grid_y + dy}`);
@@ -273,25 +280,53 @@ export const useFactoryStore = create<FactoryState>((set, get) => ({
       return true;
     };
 
-    // If preferNear is provided, search in expanding rings around it
+    // If preferNear is provided, place agent adjacent to the project
     if (preferNear) {
-      for (let radius = 0; radius < 20; radius++) {
-        for (let dx = -radius; dx <= radius; dx++) {
-          for (let dy = -radius; dy <= radius; dy++) {
-            if (Math.abs(dx) !== radius && Math.abs(dy) !== radius) continue; // Only ring edge
-            const x = preferNear.x + dx * 3; // *3 to leave space between entities
-            const y = preferNear.y + dy * 3;
-            if (isFree(x, y)) {
-              return { x, y };
-            }
+      // Find the project at this position to get its actual size
+      let projectSize = 2;
+      for (const project of projects.values()) {
+        if (project.grid_x === preferNear.x && project.grid_y === preferNear.y) {
+          projectSize = getProjectSize(project.file_count);
+          break;
+        }
+      }
+
+      // Try positions around the project (right, above, left, below)
+      // Add spacing of 4 cells for conveyor belts
+      const spacing = 4;
+      const candidatePositions = [
+        { x: preferNear.x + projectSize + spacing, y: preferNear.y },
+        { x: preferNear.x, y: preferNear.y - spacing - 2 },
+        { x: preferNear.x - spacing - 2, y: preferNear.y },
+        { x: preferNear.x, y: preferNear.y + projectSize + spacing },
+      ];
+
+      for (const pos of candidatePositions) {
+        if (isFree(pos.x, pos.y)) {
+          return pos;
+        }
+      }
+
+      // Expand search in rings around project
+      for (let ring = 1; ring <= 10; ring++) {
+        const offset = spacing + ring * 4;
+        const ringPositions = [
+          { x: preferNear.x + projectSize + offset, y: preferNear.y },
+          { x: preferNear.x, y: preferNear.y - offset - 2 },
+          { x: preferNear.x - offset - 2, y: preferNear.y },
+          { x: preferNear.x, y: preferNear.y + projectSize + offset },
+        ];
+        for (const pos of ringPositions) {
+          if (isFree(pos.x, pos.y)) {
+            return pos;
           }
         }
       }
     }
 
     // Default: find first free position in a grid pattern
-    for (let y = 0; y < 100; y += 3) {
-      for (let x = 0; x < 100; x += 3) {
+    for (let y = 0; y < 100; y += 4) {
+      for (let x = 0; x < 100; x += 4) {
         if (isFree(x, y)) {
           return { x, y };
         }

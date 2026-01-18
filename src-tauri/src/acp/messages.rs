@@ -9,8 +9,8 @@ use serde_json::Value;
 pub struct InitializeParams {
     #[serde(rename = "protocolVersion")]
     pub protocol_version: i32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub capabilities: Option<Value>,
+    #[serde(rename = "clientCapabilities", skip_serializing_if = "Option::is_none")]
+    pub client_capabilities: Option<Value>,
     #[serde(rename = "clientInfo", skip_serializing_if = "Option::is_none")]
     pub client_info: Option<ClientInfo>,
 }
@@ -42,9 +42,14 @@ impl InitializeParams {
     pub fn new() -> Self {
         Self {
             protocol_version: 1,
-            capabilities: Some(serde_json::json!({})),
+            client_capabilities: Some(serde_json::json!({
+                "fs": {
+                    "readTextFile": true,
+                    "writeTextFile": true
+                }
+            })),
             client_info: Some(ClientInfo {
-                name: "Agent Commander".to_string(),
+                name: "ACPtorio".to_string(),
                 version: "0.1.0".to_string(),
             }),
         }
@@ -55,6 +60,37 @@ impl Default for InitializeParams {
     fn default() -> Self {
         Self::new()
     }
+}
+
+// ============================================================================
+// Authentication
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthMethod {
+    pub id: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthStartParams {
+    #[serde(rename = "authMethodId")]
+    pub auth_method_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthStartResult {
+    /// URL to open in browser for OAuth flow
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// Instructions to display to user
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    /// Whether auth completed immediately (e.g., API key already set)
+    #[serde(default)]
+    pub completed: bool,
 }
 
 // ============================================================================

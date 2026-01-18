@@ -239,6 +239,7 @@ interface AgentState {
 | Ctrl/Cmd + click | Multi-select toggle |
 | Click empty space | Clear selection, start pan |
 | Drag entity | Move to new grid position |
+| Drag selected entity | Move ALL selected entities together (preserves relative positions) |
 | Shift + drag | Box selection |
 | Right click | Context menu |
 | Scroll wheel | Zoom in/out (centered on cursor) |

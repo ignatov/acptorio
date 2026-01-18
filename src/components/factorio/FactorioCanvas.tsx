@@ -4,9 +4,12 @@ import { useUIStore } from "../../stores/uiStore";
 import { useAgentStore } from "../../stores/agentStore";
 import { useFactoryStore } from "../../stores/factoryStore";
 import { useMetricsStore } from "../../stores/metricsStore";
+import { useRegistryStore } from "../../stores/registryStore";
 import { FactorioRenderer, type Entity, type AgentEntity, type ResourceEntity } from "./FactorioRenderer";
 import { screenToWorld, snapToGrid, TILE_SIZE } from "./grid";
 import { AgentChatPalette } from "./AgentChatPalette";
+import { AgentPicker } from "./AgentPicker";
+import type { RegistryAgent } from "../../types/registry";
 
 interface ContextMenu {
   x: number;
@@ -15,11 +18,19 @@ interface ContextMenu {
   worldY: number;
 }
 
-interface DragState {
+interface DraggedEntity {
   entityId: string;
   entityType: "agent" | "resource";
   startGridX: number;
   startGridY: number;
+}
+
+interface DragState {
+  entities: DraggedEntity[];
+  // The primary entity being dragged (for offset calculations)
+  primaryEntityId: string;
+  primaryStartGridX: number;
+  primaryStartGridY: number;
 }
 
 interface PendingDrag {
@@ -55,7 +66,10 @@ export function FactorioCanvas() {
   const [dragState, setDragState] = useState<DragState | null>(null);
   const [selectionBox, setSelectionBox] = useState<SelectionBox | null>(null);
   const [showDeployDialog, setShowDeployDialog] = useState(false);
+  const [showAgentPicker, setShowAgentPicker] = useState(false);
+  const [pendingDeployProjectId, setPendingDeployProjectId] = useState<string | null>(null);
   const [isDeploying, setIsDeploying] = useState(false);
+  const [deployError, setDeployError] = useState<string | null>(null);
   const [respondedInputIds, setRespondedInputIds] = useState<Set<string>>(new Set());
 
   const viewport = useUIStore((s) => s.factorioViewport);
@@ -92,12 +106,49 @@ export function FactorioCanvas() {
   const metrics = useMetricsStore((s) => s.metrics);
   const fetchMetrics = useMetricsStore((s) => s.fetchMetrics);
 
+  const fetchRegistryAgents = useRegistryStore((s) => s.fetchAgents);
+  const registryIcons = useRegistryStore((s) => s.icons);
+
   // Load factory state on mount
   useEffect(() => {
     if (!isLoaded) {
       loadFromBackend();
     }
   }, [isLoaded, loadFromBackend]);
+
+  // Fetch registry agents on mount
+  useEffect(() => {
+    fetchRegistryAgents();
+  }, [fetchRegistryAgents]);
+
+  // Load provider icons into renderer when they become available
+  useEffect(() => {
+    const renderer = rendererRef.current;
+    if (!renderer) return;
+
+    registryIcons.forEach((dataUrl, providerId) => {
+      renderer.loadProviderIcon(providerId, dataUrl);
+    });
+  }, [registryIcons]);
+
+  // Preload provider sprites for all agents
+  useEffect(() => {
+    const renderer = rendererRef.current;
+    if (!renderer) return;
+
+    // Get unique provider IDs from all agents
+    const providerIds = new Set<string>();
+    agents.forEach((agent) => {
+      if (agent.provider_id) {
+        providerIds.add(agent.provider_id);
+      }
+    });
+
+    // Preload sprites for each provider
+    providerIds.forEach((providerId) => {
+      renderer.preloadProviderSprites(providerId);
+    });
+  }, [agents]);
 
   // Restore viewport from saved state
   useEffect(() => {
@@ -148,8 +199,8 @@ export function FactorioCanvas() {
       for (const placement of persistedAgents) {
         if (placement.name && placement.working_directory) {
           try {
-            console.log(`Restoring agent: ${placement.name}`);
-            const agent = await spawnAgent(placement.name, placement.working_directory);
+            console.log(`Restoring agent: ${placement.name} (provider: ${placement.provider_id || 'default'})`);
+            const agent = await spawnAgent(placement.name, placement.working_directory, placement.provider_id || undefined);
 
             // Agent gets a new ID on spawn, update placement
             // Remove old placement and create new one with the new agent ID
@@ -160,7 +211,8 @@ export function FactorioCanvas() {
               placement.grid_y,
               placement.connected_project_id,
               placement.name,
-              placement.working_directory
+              placement.working_directory,
+              placement.provider_id
             );
           } catch (error) {
             console.error(`Failed to restore agent ${placement.name}:`, error);
@@ -209,31 +261,69 @@ export function FactorioCanvas() {
     }
   }, [selectedAgentIds, selectedProjectIds, clearSelection, stopAgent, removeAgentPlacement, removeProject]);
 
-  // Handle deploying an agent to a project
-  const handleDeployAgent = useCallback(async (projectId: string) => {
-    const project = projects.get(projectId);
+  // Handle initiating deploy - shows agent picker first
+  const handleInitiateDeploy = useCallback((projectId: string) => {
+    setPendingDeployProjectId(projectId);
+    setShowDeployDialog(false);
+    setShowAgentPicker(true);
+  }, []);
+
+  // Handle deploying an agent with selected provider
+  const handleDeployWithProvider = useCallback(async (registryAgent: RegistryAgent) => {
+    if (!pendingDeployProjectId) return;
+
+    const project = projects.get(pendingDeployProjectId);
     if (!project) return;
 
+    setShowAgentPicker(false);
     setIsDeploying(true);
-    setShowDeployDialog(false);
+    setDeployError(null);
 
     try {
-      const agentName = `Agent-${project.name}`;
-      const agent = await spawnAgent(agentName, project.path);
+      const agentName = `${registryAgent.name}-${project.name}`;
+      const agent = await spawnAgent(agentName, project.path, registryAgent.id);
 
-      // Place the agent near the project and persist metadata
+      // Place the agent near the project and persist metadata including provider
       const agentPos = findNextAvailablePosition({ x: project.grid_x, y: project.grid_y });
-      setAgentPlacement(agent.id, agentPos.x, agentPos.y, projectId, agentName, project.path);
+      setAgentPlacement(agent.id, agentPos.x, agentPos.y, pendingDeployProjectId, agentName, project.path, registryAgent.id);
 
       // Select the new agent to open its chat window
       setSelectedProjectIds(new Set());
       selectAgent(agent.id, false);
     } catch (error) {
       console.error("Failed to deploy agent:", error);
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      setDeployError(`Failed to deploy ${registryAgent.name}: ${errorMsg}`);
     } finally {
       setIsDeploying(false);
+      setPendingDeployProjectId(null);
     }
-  }, [projects, spawnAgent, findNextAvailablePosition, setAgentPlacement, selectAgent]);
+  }, [pendingDeployProjectId, projects, spawnAgent, findNextAvailablePosition, setAgentPlacement, selectAgent]);
+
+  // Legacy deploy handler for backward compatibility (uses default Claude)
+  const handleDeployAgent = useCallback(async (projectId: string) => {
+    handleInitiateDeploy(projectId);
+  }, [handleInitiateDeploy]);
+
+  // Handle adding a project via dialog
+  const handleAddProject = useCallback(async (worldX: number, worldY: number) => {
+    setContextMenu(null);
+
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: "Select Project Folder",
+      });
+
+      if (selected && typeof selected === "string") {
+        const snapped = snapToGrid(worldX, worldY);
+        addProject(selected, snapped.x / TILE_SIZE, snapped.y / TILE_SIZE);
+      }
+    } catch (error) {
+      console.error("Failed to open folder dialog:", error);
+    }
+  }, [addProject]);
 
   // Keyboard handler for delete, select all, and WASD navigation
   useEffect(() => {
@@ -304,6 +394,19 @@ export function FactorioCanvas() {
         const projectId = Array.from(selectedProjectIds)[0];
         handleDeployAgent(projectId);
       }
+
+      // P to add a new project at viewport center
+      if (key === "p") {
+        e.preventDefault();
+        const canvas = canvasRef.current;
+        if (canvas) {
+          const rect = canvas.getBoundingClientRect();
+          const centerX = rect.width / 2;
+          const centerY = rect.height / 2;
+          const world = screenToWorld(centerX, centerY, viewport);
+          handleAddProject(world.x, world.y);
+        }
+      }
     };
 
     const handleKeyUp = (e: KeyboardEvent) => {
@@ -323,7 +426,7 @@ export function FactorioCanvas() {
       window.removeEventListener("keyup", handleKeyUp);
       if (animationId) cancelAnimationFrame(animationId);
     };
-  }, [selectedAgentIds, selectedProjectIds, handleDeleteSelected, handleDeployAgent, isDeploying, agents, projects, setSelectedAgentIds, clearSelection, panCanvas]);
+  }, [selectedAgentIds, selectedProjectIds, handleDeleteSelected, handleDeployAgent, isDeploying, agents, projects, setSelectedAgentIds, clearSelection, panCanvas, viewport, handleAddProject]);
 
   // Initialize renderer
   useEffect(() => {
@@ -387,13 +490,11 @@ export function FactorioCanvas() {
 
     // Add agent machines with positions from factory store
     agents.forEach((agent) => {
-      let placement = getAgentPlacement(agent.id);
+      const placement = getAgentPlacement(agent.id);
 
-      // If no placement exists, create one
+      // Skip agents without placement - they will get placed by the deploy handler
       if (!placement) {
-        const pos = findNextAvailablePosition();
-        setAgentPlacement(agent.id, pos.x, pos.y);
-        placement = { agent_id: agent.id, grid_x: pos.x, grid_y: pos.y, connected_project_id: null };
+        return;
       }
 
       const agentEntity: AgentEntity = {
@@ -433,27 +534,8 @@ export function FactorioCanvas() {
 
     // Pass responded input IDs for badge display
     renderer.setRespondedInputIds(respondedInputIds);
-  }, [agents, selectedAgentIds, selectedProjectIds, projects, agentPlacements, isLoaded, getAgentPlacement, findNextAvailablePosition, setAgentPlacement, respondedInputIds]);
+  }, [agents, selectedAgentIds, selectedProjectIds, projects, agentPlacements, isLoaded, getAgentPlacement, respondedInputIds]);
 
-  // Handle adding a project via dialog
-  const handleAddProject = useCallback(async (worldX: number, worldY: number) => {
-    setContextMenu(null);
-
-    try {
-      const selected = await open({
-        directory: true,
-        multiple: false,
-        title: "Select Project Folder",
-      });
-
-      if (selected && typeof selected === "string") {
-        const snapped = snapToGrid(worldX, worldY);
-        addProject(selected, snapped.x / TILE_SIZE, snapped.y / TILE_SIZE);
-      }
-    } catch (error) {
-      console.error("Failed to open folder dialog:", error);
-    }
-  }, [addProject]);
   // Mouse handlers
   const handleMouseDown = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -567,33 +649,88 @@ export function FactorioCanvas() {
         const distance = Math.sqrt(dx * dx + dy * dy);
 
         if (distance >= DRAG_THRESHOLD) {
+          // Build list of all entities to drag (selected ones + the one being dragged)
+          const entitiesToDrag: DraggedEntity[] = [];
+
+          // Add all selected agents
+          for (const agentId of selectedAgentIds) {
+            const placement = getAgentPlacement(agentId);
+            if (placement) {
+              entitiesToDrag.push({
+                entityId: agentId,
+                entityType: "agent",
+                startGridX: placement.grid_x,
+                startGridY: placement.grid_y,
+              });
+            }
+          }
+
+          // Add all selected projects
+          for (const projectId of selectedProjectIds) {
+            const project = projects.get(projectId);
+            if (project) {
+              entitiesToDrag.push({
+                entityId: projectId,
+                entityType: "resource",
+                startGridX: project.grid_x,
+                startGridY: project.grid_y,
+              });
+            }
+          }
+
+          // If the dragged entity isn't in the selection, just drag it alone
+          const isInSelection = entitiesToDrag.some(e => e.entityId === pendingDrag.entityId);
+          if (!isInSelection) {
+            entitiesToDrag.length = 0; // Clear selection-based entities
+            entitiesToDrag.push({
+              entityId: pendingDrag.entityId,
+              entityType: pendingDrag.entityType,
+              startGridX: pendingDrag.startGridX,
+              startGridY: pendingDrag.startGridY,
+            });
+          }
+
           // Convert pending drag to actual drag
           setDragState({
-            entityId: pendingDrag.entityId,
-            entityType: pendingDrag.entityType,
-            startGridX: pendingDrag.startGridX,
-            startGridY: pendingDrag.startGridY,
+            entities: entitiesToDrag,
+            primaryEntityId: pendingDrag.entityId,
+            primaryStartGridX: pendingDrag.startGridX,
+            primaryStartGridY: pendingDrag.startGridY,
           });
           setPendingDrag(null);
 
-          // Immediately update drag preview
+          // Immediately update drag preview for all entities
           const world = screenToWorld(x, y, viewport);
           const snapped = snapToGrid(world.x, world.y);
           if (renderer) {
-            renderer.setDragPreview(pendingDrag.entityId, snapped.x / TILE_SIZE, snapped.y / TILE_SIZE);
+            const offsetX = snapped.x / TILE_SIZE - pendingDrag.startGridX;
+            const offsetY = snapped.y / TILE_SIZE - pendingDrag.startGridY;
+            for (const entity of entitiesToDrag) {
+              renderer.setDragPreview(entity.entityId, entity.startGridX + offsetX, entity.startGridY + offsetY);
+            }
           }
         }
       } else if (dragState && canvas) {
-        // Update entity position while dragging (visual only)
+        // Update all entity positions while dragging (visual only)
         const rect = canvas.getBoundingClientRect();
         const x = e.clientX - rect.left;
         const y = e.clientY - rect.top;
         const world = screenToWorld(x, y, viewport);
         const snapped = snapToGrid(world.x, world.y);
 
-        // Update renderer with preview position
+        // Calculate offset from primary entity's start position
+        const offsetX = snapped.x / TILE_SIZE - dragState.primaryStartGridX;
+        const offsetY = snapped.y / TILE_SIZE - dragState.primaryStartGridY;
+
+        // Update renderer with preview positions for all dragged entities
         if (renderer) {
-          renderer.setDragPreview(dragState.entityId, snapped.x / TILE_SIZE, snapped.y / TILE_SIZE);
+          for (const entity of dragState.entities) {
+            renderer.setDragPreview(
+              entity.entityId,
+              entity.startGridX + offsetX,
+              entity.startGridY + offsetY
+            );
+          }
         }
       } else if (renderer && canvas) {
         // Update hover state
@@ -604,7 +741,7 @@ export function FactorioCanvas() {
         renderer.setHoveredId(entity?.id ?? null);
       }
     },
-    [isPanning, panStart, panCanvas, selectionBox, pendingDrag, dragState, viewport]
+    [isPanning, panStart, panCanvas, selectionBox, pendingDrag, dragState, viewport, selectedAgentIds, selectedProjectIds, projects, getAgentPlacement]
   );
 
   const handleMouseUp = useCallback(
@@ -657,14 +794,21 @@ export function FactorioCanvas() {
         const y = e.clientY - rect.top;
         const world = screenToWorld(x, y, viewport);
         const snapped = snapToGrid(world.x, world.y);
-        const newGridX = snapped.x / TILE_SIZE;
-        const newGridY = snapped.y / TILE_SIZE;
 
-        // Save the new position
-        if (dragState.entityType === "agent") {
-          setAgentPlacement(dragState.entityId, newGridX, newGridY);
-        } else if (dragState.entityType === "resource") {
-          moveProject(dragState.entityId, newGridX, newGridY);
+        // Calculate offset from primary entity's start position
+        const offsetX = snapped.x / TILE_SIZE - dragState.primaryStartGridX;
+        const offsetY = snapped.y / TILE_SIZE - dragState.primaryStartGridY;
+
+        // Save new positions for all dragged entities
+        for (const entity of dragState.entities) {
+          const newGridX = entity.startGridX + offsetX;
+          const newGridY = entity.startGridY + offsetY;
+
+          if (entity.entityType === "agent") {
+            setAgentPlacement(entity.entityId, newGridX, newGridY);
+          } else if (entity.entityType === "resource") {
+            moveProject(entity.entityId, newGridX, newGridY);
+          }
         }
 
         if (renderer) {
@@ -879,6 +1023,30 @@ export function FactorioCanvas() {
                 )}
               </div>
             </div>
+          </div>
+        )}
+
+        {/* Agent Picker */}
+        {showAgentPicker && (
+          <AgentPicker
+            onSelect={handleDeployWithProvider}
+            onClose={() => {
+              setShowAgentPicker(false);
+              setPendingDeployProjectId(null);
+            }}
+          />
+        )}
+
+        {/* Deploy Error Notification */}
+        {deployError && (
+          <div className="deploy-error-notification">
+            <span className="deploy-error-message">{deployError}</span>
+            <button
+              className="deploy-error-dismiss"
+              onClick={() => setDeployError(null)}
+            >
+              ×
+            </button>
           </div>
         )}
 

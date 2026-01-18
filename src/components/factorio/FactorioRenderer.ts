@@ -6,7 +6,7 @@ import {
   type Viewport,
 } from "./grid";
 import type { AgentInfo } from "../../types";
-import { getSpriteManager, getAnimationFrame, type SpriteManager, PALETTE, PROJECT_COLORS } from "./sprites";
+import { getSpriteManager, getAnimationFrame, type SpriteManager, type SpriteSet, PALETTE, PROJECT_COLORS, getProviderColors } from "./sprites";
 import { BeltRouter, type BeltPath } from "./BeltRouter";
 
 // Colors matching Factorio style
@@ -69,7 +69,7 @@ export class FactorioRenderer {
   private entities: Map<string, Entity> = new Map();
   private selectedIds: Set<string> = new Set();
   private hoveredId: string | null = null;
-  private dragPreview: { entityId: string; gridX: number; gridY: number } | null = null;
+  private dragPreviews: Map<string, { gridX: number; gridY: number }> = new Map();
 
   private spriteManager: SpriteManager | null = null;
   private spritesLoading: boolean = false;
@@ -87,6 +87,13 @@ export class FactorioRenderer {
 
   // Track responded input IDs to hide badges immediately
   private respondedInputIds: Set<string> = new Set();
+
+  // Provider icons cache
+  private providerIcons: Map<string, ImageBitmap> = new Map();
+
+  // Provider sprites cache (for synchronous access)
+  private providerSpritesCache: Map<string, SpriteSet> = new Map();
+  private providerSpritesLoading: Set<string> = new Set();
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -164,13 +171,64 @@ export class FactorioRenderer {
     this.respondedInputIds = ids;
   }
 
+  async loadProviderIcon(providerId: string, dataUrl: string): Promise<void> {
+    if (this.providerIcons.has(providerId)) return;
+
+    try {
+      const img = new Image();
+      img.src = dataUrl;
+      await new Promise<void>((resolve, reject) => {
+        img.onload = () => resolve();
+        img.onerror = () => reject(new Error("Failed to load image"));
+      });
+      const bitmap = await createImageBitmap(img);
+      this.providerIcons.set(providerId, bitmap);
+    } catch (error) {
+      console.error(`Failed to load provider icon for ${providerId}:`, error);
+    }
+  }
+
+  getProviderIcon(providerId: string): ImageBitmap | undefined {
+    return this.providerIcons.get(providerId);
+  }
+
+  /**
+   * Preload provider-specific sprites for an agent
+   */
+  async preloadProviderSprites(providerId: string): Promise<void> {
+    if (this.providerSpritesCache.has(providerId) || this.providerSpritesLoading.has(providerId)) {
+      return;
+    }
+
+    if (!this.spriteManager) return;
+
+    this.providerSpritesLoading.add(providerId);
+    try {
+      const sprites = await this.spriteManager.getProviderSprite(providerId);
+      if (sprites) {
+        this.providerSpritesCache.set(providerId, sprites);
+      }
+    } catch (error) {
+      console.error(`Failed to load provider sprites for ${providerId}:`, error);
+    } finally {
+      this.providerSpritesLoading.delete(providerId);
+    }
+  }
+
+  /**
+   * Get cached provider sprites (synchronous)
+   */
+  private getProviderSprites(providerId: string): SpriteSet | undefined {
+    return this.providerSpritesCache.get(providerId);
+  }
+
   setDragPreview(entityId: string, gridX: number, gridY: number): void {
-    this.dragPreview = { entityId, gridX, gridY };
+    this.dragPreviews.set(entityId, { gridX, gridY });
     this.beltsDirty = true; // Recalculate routes during drag
   }
 
   clearDragPreview(): void {
-    this.dragPreview = null;
+    this.dragPreviews.clear();
     this.beltsDirty = true; // Recalculate routes after drag ends
   }
 
@@ -233,9 +291,9 @@ export class FactorioRenderer {
       }
     }
 
-    // Draw drag ghost
-    if (this.dragPreview) {
-      this.drawDragGhost();
+    // Draw drag ghosts for all dragged entities
+    if (this.dragPreviews.size > 0) {
+      this.drawDragGhosts();
     }
 
     // Draw viewport info (debug)
@@ -291,33 +349,37 @@ export class FactorioRenderer {
   }
 
   private getEntityRenderPosition(entity: Entity): { gridX: number; gridY: number } {
-    if (this.dragPreview && this.dragPreview.entityId === entity.id) {
-      return { gridX: this.dragPreview.gridX, gridY: this.dragPreview.gridY };
+    const dragPreview = this.dragPreviews.get(entity.id);
+    if (dragPreview) {
+      return { gridX: dragPreview.gridX, gridY: dragPreview.gridY };
     }
     return { gridX: entity.gridX, gridY: entity.gridY };
   }
 
-  private drawDragGhost(): void {
-    if (!this.dragPreview) return;
+  private drawDragGhosts(): void {
+    if (this.dragPreviews.size === 0) return;
 
     const { ctx, viewport } = this;
-    const entity = this.entities.get(this.dragPreview.entityId);
-    if (!entity) return;
 
-    const screenPos = worldToScreen(
-      this.dragPreview.gridX * TILE_SIZE,
-      this.dragPreview.gridY * TILE_SIZE,
-      viewport
-    );
-    const screenWidth = entity.width * TILE_SIZE * viewport.zoom;
-    const screenHeight = entity.height * TILE_SIZE * viewport.zoom;
+    for (const [entityId, preview] of this.dragPreviews) {
+      const entity = this.entities.get(entityId);
+      if (!entity) continue;
 
-    // Draw ghost outline
-    ctx.strokeStyle = "rgba(0, 255, 136, 0.8)";
-    ctx.lineWidth = 2;
-    ctx.setLineDash([5, 5]);
-    ctx.strokeRect(screenPos.x, screenPos.y, screenWidth, screenHeight);
-    ctx.setLineDash([]);
+      const screenPos = worldToScreen(
+        preview.gridX * TILE_SIZE,
+        preview.gridY * TILE_SIZE,
+        viewport
+      );
+      const screenWidth = entity.width * TILE_SIZE * viewport.zoom;
+      const screenHeight = entity.height * TILE_SIZE * viewport.zoom;
+
+      // Draw ghost outline
+      ctx.strokeStyle = "rgba(0, 255, 136, 0.8)";
+      ctx.lineWidth = 2;
+      ctx.setLineDash([5, 5]);
+      ctx.strokeRect(screenPos.x, screenPos.y, screenWidth, screenHeight);
+      ctx.setLineDash([]);
+    }
   }
 
   private drawAgentMachine(entity: AgentEntity, gridX: number, gridY: number): void {
@@ -334,8 +396,20 @@ export class FactorioRenderer {
     const pendingInputs = agent.pending_inputs.filter(p => !respondedInputIds.has(p.id));
     const hasPendingInput = pendingInputs.length > 0;
 
-    // Try to use sprite if available
-    const spriteSet = spriteManager?.getSprite("assembler");
+    // Try to use provider-specific sprite, fallback to default assembler
+    let spriteSet = agent.provider_id
+      ? this.getProviderSprites(agent.provider_id)
+      : undefined;
+
+    // If provider sprite not loaded yet, trigger load and use default
+    if (!spriteSet && agent.provider_id && spriteManager) {
+      // Trigger async load for next render
+      this.preloadProviderSprites(agent.provider_id);
+      spriteSet = spriteManager.getSprite("assembler");
+    } else if (!spriteSet) {
+      spriteSet = spriteManager?.getSprite("assembler");
+    }
+
     if (spriteSet) {
       // Determine which animation to use
       let animation = spriteSet.idle;
@@ -364,13 +438,40 @@ export class FactorioRenderer {
         ctx.fillRect(screenPos.x, screenPos.y, screenWidth, screenHeight);
       }
 
-      // Draw selection/hover border (Factorio yellow style)
+      // Get provider colors for selection glow
+      const providerColors = getProviderColors(agent.provider_id);
+
+      // Draw provider icon in top-left corner if available
+      if (agent.provider_id) {
+        const providerIcon = this.providerIcons.get(agent.provider_id);
+        if (providerIcon) {
+          const iconSize = 16 * viewport.zoom;
+          const iconPadding = 4 * viewport.zoom;
+          ctx.drawImage(
+            providerIcon,
+            screenPos.x + iconPadding,
+            screenPos.y + iconPadding,
+            iconSize,
+            iconSize
+          );
+        }
+      }
+
+      // Draw selection/hover border (use provider color for selected)
       if (isSelected || isHovered) {
-        ctx.strokeStyle = isSelected ? COLORS.machineBorderSelected : COLORS.machineBorder;
+        ctx.strokeStyle = isSelected ? providerColors.light : COLORS.machineBorder;
         ctx.lineWidth = isSelected ? 3 : 2;
         // Draw corner brackets instead of full rect (Factorio style)
         const cornerSize = Math.min(screenWidth, screenHeight) * 0.2;
         this.drawSelectionBrackets(ctx, screenPos.x, screenPos.y, screenWidth, screenHeight, cornerSize);
+
+        // Add glow effect for selected with provider color
+        if (isSelected) {
+          ctx.shadowColor = providerColors.main;
+          ctx.shadowBlur = 10 * viewport.zoom;
+          this.drawSelectionBrackets(ctx, screenPos.x, screenPos.y, screenWidth, screenHeight, cornerSize);
+          ctx.shadowBlur = 0;
+        }
       }
     } else {
       // Fallback to primitive rendering
