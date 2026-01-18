@@ -191,15 +191,49 @@ export function FactorioCanvas() {
     }
   }, [selectedAgentIds, clearSelection, stopAgent, removeAgentPlacement]);
 
-  // Keyboard handler for delete and select all
+  // Keyboard handler for delete, select all, and WASD navigation
   useEffect(() => {
+    const PAN_SPEED = 20;
+    const keysPressed = new Set<string>();
+    let animationId: number | null = null;
+
+    const updatePan = () => {
+      let dx = 0;
+      let dy = 0;
+
+      if (keysPressed.has("w") || keysPressed.has("arrowup")) dy += PAN_SPEED;
+      if (keysPressed.has("s") || keysPressed.has("arrowdown")) dy -= PAN_SPEED;
+      if (keysPressed.has("a") || keysPressed.has("arrowleft")) dx += PAN_SPEED;
+      if (keysPressed.has("d") || keysPressed.has("arrowright")) dx -= PAN_SPEED;
+
+      if (dx !== 0 || dy !== 0) {
+        panCanvas(dx, dy);
+        animationId = requestAnimationFrame(updatePan);
+      } else {
+        animationId = null;
+      }
+    };
+
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Don't handle if focus is on an input
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+        return;
+      }
+
+      const key = e.key.toLowerCase();
+
+      // WASD and arrow keys for panning
+      if (["w", "a", "s", "d", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(key)) {
+        e.preventDefault();
+        keysPressed.add(key);
+        if (!animationId) {
+          animationId = requestAnimationFrame(updatePan);
+        }
+        return;
+      }
+
       // Delete or Backspace to remove selected agents
       if ((e.key === "Delete" || e.key === "Backspace") && selectedAgentIds.size > 0) {
-        // Don't delete if focus is on an input
-        if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
-          return;
-        }
         e.preventDefault();
         handleDeleteSelected();
       }
@@ -218,9 +252,24 @@ export function FactorioCanvas() {
       }
     };
 
+    const handleKeyUp = (e: KeyboardEvent) => {
+      const key = e.key.toLowerCase();
+      keysPressed.delete(key);
+
+      if (keysPressed.size === 0 && animationId) {
+        cancelAnimationFrame(animationId);
+        animationId = null;
+      }
+    };
+
     window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [selectedAgentIds, handleDeleteSelected, agents, setSelectedAgentIds, clearSelection]);
+    window.addEventListener("keyup", handleKeyUp);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
+      if (animationId) cancelAnimationFrame(animationId);
+    };
+  }, [selectedAgentIds, handleDeleteSelected, agents, setSelectedAgentIds, clearSelection, panCanvas]);
 
   // Initialize renderer
   useEffect(() => {
@@ -632,7 +681,7 @@ export function FactorioCanvas() {
   return (
     <div ref={containerRef} className="factorio-canvas">
       <div className="factorio-canvas__header">
-        <span className="factorio-canvas__title">FACTORY</span>
+        <span className="factorio-canvas__title">ACPTORIO</span>
         <div className="factorio-canvas__stats">
           <span className="factorio-canvas__stat">
             <span className="factorio-canvas__stat-label">Projects</span>
@@ -659,7 +708,7 @@ export function FactorioCanvas() {
             onClick={() => setShowDeployDialog(true)}
             disabled={projects.size === 0 || isDeploying}
           >
-            {isDeploying ? "Deploying..." : "Deploy Agent"}
+            {isDeploying ? "Deploying..." : "Deploy"}
           </button>
         </div>
       </div>
@@ -727,7 +776,7 @@ export function FactorioCanvas() {
           <div className="deploy-dialog-overlay" onClick={() => setShowDeployDialog(false)}>
             <div className="deploy-dialog" onClick={(e) => e.stopPropagation()}>
               <div className="deploy-dialog__header">
-                <span className="deploy-dialog__title">Deploy Agent to Project</span>
+                <span className="deploy-dialog__title">Deploy</span>
                 <button
                   className="deploy-dialog__close"
                   onClick={() => setShowDeployDialog(false)}

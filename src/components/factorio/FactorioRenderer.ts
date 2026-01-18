@@ -6,24 +6,33 @@ import {
   type Viewport,
 } from "./grid";
 import type { AgentInfo } from "../../types";
-import { getSpriteManager, getAnimationFrame, type SpriteManager } from "./sprites";
+import { getSpriteManager, getAnimationFrame, type SpriteManager, PALETTE } from "./sprites";
+import { BeltRouter, type BeltPath } from "./BeltRouter";
 
-// Colors matching the app theme
+// Colors matching Factorio style
 const COLORS = {
-  background: "#1a1a2e",
-  gridLine: "#2a2a4e",
-  gridLineMajor: "#3a3a5e",
-  machineIdle: "#16213e",
-  machineWorking: "#00ff88",
-  machineError: "#e94560",
+  // Terrain
+  background: PALETTE.terrainBase,
+  gridLine: "rgba(0, 0, 0, 0.1)",
+  gridLineMajor: "rgba(0, 0, 0, 0.2)",
+
+  // Machine states
+  machineIdle: PALETTE.machineBrass,
+  machineWorking: PALETTE.machineGlow,
+  machineError: PALETTE.machineError,
   machineAttention: "#ffd700",
-  machineBorder: "#4a5568",
-  machineBorderSelected: "#e94560",
-  machineGlow: "#00ff88",
-  resourceNode: "#0f3460",
-  resourceBorder: "#00d4ff",
-  text: "#f0f0f0",
-  textDim: "#718096",
+  machineBorder: PALETTE.machineFrame,
+  machineBorderSelected: PALETTE.selectionYellow,
+  machineGlow: PALETTE.machineGlow,
+
+  // Resources
+  resourceNode: PALETTE.oreCopper,
+  resourceBorder: PALETTE.oreCopperLight,
+
+  // Text
+  text: "#ffffff",
+  textDim: "#c4a158",
+  textShadow: "rgba(0, 0, 0, 0.7)",
 };
 
 export interface EntityPosition {
@@ -65,6 +74,11 @@ export class FactorioRenderer {
 
   // Connections: agentId -> projectId
   private connections: Map<string, string> = new Map();
+
+  // Belt routing
+  private beltRouter: BeltRouter = new BeltRouter();
+  private routedBelts: Map<string, BeltPath> = new Map();
+  private beltsDirty: boolean = true;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -118,6 +132,7 @@ export class FactorioRenderer {
     for (const entity of entities) {
       this.entities.set(entity.id, entity);
     }
+    this.beltsDirty = true;
   }
 
   setSelectedIds(ids: Set<string>): void {
@@ -130,14 +145,17 @@ export class FactorioRenderer {
 
   setConnections(connections: Map<string, string>): void {
     this.connections = connections;
+    this.beltsDirty = true;
   }
 
   setDragPreview(entityId: string, gridX: number, gridY: number): void {
     this.dragPreview = { entityId, gridX, gridY };
+    this.beltsDirty = true; // Recalculate routes during drag
   }
 
   clearDragPreview(): void {
     this.dragPreview = null;
+    this.beltsDirty = true; // Recalculate routes after drag ends
   }
 
   getEntityAtScreen(screenX: number, screenY: number): Entity | null {
@@ -209,10 +227,27 @@ export class FactorioRenderer {
   }
 
   private drawGrid(width: number, height: number): void {
-    const { ctx, viewport } = this;
+    const { ctx, viewport, spriteManager } = this;
     const range = getVisibleGridRange(width, height, viewport);
+    const screenTileSize = TILE_SIZE * viewport.zoom;
 
+    // Draw terrain tiles with position-based variation
+    if (spriteManager) {
+      ctx.imageSmoothingEnabled = false;
+      for (let x = range.minX; x <= range.maxX; x++) {
+        for (let y = range.minY; y <= range.maxY; y++) {
+          const terrainTile = spriteManager.getTerrainTile(x, y);
+          if (terrainTile) {
+            const screenPos = worldToScreen(x * TILE_SIZE, y * TILE_SIZE, viewport);
+            ctx.drawImage(terrainTile, screenPos.x, screenPos.y, screenTileSize, screenTileSize);
+          }
+        }
+      }
+    }
+
+    // Draw subtle grid lines
     ctx.lineWidth = 1;
+    ctx.globalAlpha = 0.3;
 
     for (let x = range.minX; x <= range.maxX; x++) {
       const screenPos = worldToScreen(x * TILE_SIZE, 0, viewport);
@@ -235,6 +270,8 @@ export class FactorioRenderer {
       ctx.lineTo(width, screenPos.y);
       ctx.stroke();
     }
+
+    ctx.globalAlpha = 1;
   }
 
   private getEntityRenderPosition(entity: Entity): { gridX: number; gridY: number } {
@@ -301,11 +338,13 @@ export class FactorioRenderer {
       ctx.imageSmoothingEnabled = false; // Pixel art should be crisp
       ctx.drawImage(frame, screenPos.x, screenPos.y, screenWidth, screenHeight);
 
-      // Draw selection/hover border
+      // Draw selection/hover border (Factorio yellow style)
       if (isSelected || isHovered) {
         ctx.strokeStyle = isSelected ? COLORS.machineBorderSelected : COLORS.machineBorder;
         ctx.lineWidth = isSelected ? 3 : 2;
-        ctx.strokeRect(screenPos.x, screenPos.y, screenWidth, screenHeight);
+        // Draw corner brackets instead of full rect (Factorio style)
+        const cornerSize = Math.min(screenWidth, screenHeight) * 0.2;
+        this.drawSelectionBrackets(ctx, screenPos.x, screenPos.y, screenWidth, screenHeight, cornerSize);
       }
     } else {
       // Fallback to primitive rendering
@@ -379,15 +418,17 @@ export class FactorioRenderer {
       }
     }
 
-    // Agent name (always draw)
-    ctx.fillStyle = COLORS.text;
-    ctx.font = `${12 * viewport.zoom}px "JetBrains Mono", monospace`;
+    // Agent name (always draw with shadow)
+    const nameX = screenPos.x + screenWidth / 2;
+    const nameY = screenPos.y + screenHeight + 16 * viewport.zoom;
+    ctx.font = `bold ${12 * viewport.zoom}px "JetBrains Mono", monospace`;
     ctx.textAlign = "center";
-    ctx.fillText(
-      agent.name,
-      screenPos.x + screenWidth / 2,
-      screenPos.y + screenHeight + 16 * viewport.zoom
-    );
+    // Shadow
+    ctx.fillStyle = COLORS.textShadow;
+    ctx.fillText(agent.name, nameX + 1, nameY + 1);
+    // Text
+    ctx.fillStyle = COLORS.text;
+    ctx.fillText(agent.name, nameX, nameY);
 
     // Pending input indicator (always draw)
     if (hasPendingInput) {
@@ -464,15 +505,41 @@ export class FactorioRenderer {
       ctx.setLineDash([]);
     }
 
-    // Label (always draw)
-    ctx.fillStyle = COLORS.text;
-    ctx.font = `${11 * viewport.zoom}px "JetBrains Mono", monospace`;
+    // Label (always draw with shadow)
+    const labelX = screenPos.x + screenWidth / 2;
+    const labelY = screenPos.y + screenHeight + 14 * viewport.zoom;
+    ctx.font = `bold ${11 * viewport.zoom}px "JetBrains Mono", monospace`;
     ctx.textAlign = "center";
-    ctx.fillText(
-      name,
-      screenPos.x + screenWidth / 2,
-      screenPos.y + screenHeight + 14 * viewport.zoom
-    );
+    // Shadow
+    ctx.fillStyle = COLORS.textShadow;
+    ctx.fillText(name, labelX + 1, labelY + 1);
+    // Text
+    ctx.fillStyle = COLORS.text;
+    ctx.fillText(name, labelX, labelY);
+  }
+
+  private drawSelectionBrackets(
+    ctx: CanvasRenderingContext2D,
+    x: number, y: number, w: number, h: number, cornerSize: number
+  ): void {
+    ctx.beginPath();
+    // Top-left corner
+    ctx.moveTo(x, y + cornerSize);
+    ctx.lineTo(x, y);
+    ctx.lineTo(x + cornerSize, y);
+    // Top-right corner
+    ctx.moveTo(x + w - cornerSize, y);
+    ctx.lineTo(x + w, y);
+    ctx.lineTo(x + w, y + cornerSize);
+    // Bottom-right corner
+    ctx.moveTo(x + w, y + h - cornerSize);
+    ctx.lineTo(x + w, y + h);
+    ctx.lineTo(x + w - cornerSize, y + h);
+    // Bottom-left corner
+    ctx.moveTo(x + cornerSize, y + h);
+    ctx.lineTo(x, y + h);
+    ctx.lineTo(x, y + h - cornerSize);
+    ctx.stroke();
   }
 
   private drawDebugInfo(_width: number, height: number): void {
@@ -488,12 +555,26 @@ export class FactorioRenderer {
     );
   }
 
-  private drawConveyorBelts(): void {
-    const { ctx, viewport, entities, connections, animationTime, spriteManager } = this;
+  private updateBeltRoutes(): void {
+    if (!this.beltsDirty) return;
+    this.beltsDirty = false;
 
-    for (const [agentId, projectId] of connections) {
-      const agent = entities.get(agentId);
-      const project = entities.get(projectId);
+    // Build obstacle list from entities
+    const obstacles = Array.from(this.entities.values()).map(entity => ({
+      gridX: entity.gridX,
+      gridY: entity.gridY,
+      width: entity.width,
+      height: entity.height,
+      entityId: entity.id,
+    }));
+
+    this.beltRouter.setObstacles(obstacles);
+    this.routedBelts.clear();
+
+    // Route each connection
+    for (const [agentId, projectId] of this.connections) {
+      const agent = this.entities.get(agentId);
+      const project = this.entities.get(projectId);
 
       if (!agent || !project) continue;
 
@@ -501,102 +582,143 @@ export class FactorioRenderer {
       const agentPos = this.getEntityRenderPosition(agent);
       const projectPos = this.getEntityRenderPosition(project);
 
-      // Calculate center points
-      const agentCenterX = (agentPos.gridX + agent.width / 2) * TILE_SIZE;
-      const agentCenterY = (agentPos.gridY + agent.height / 2) * TILE_SIZE;
-      const projectCenterX = (projectPos.gridX + project.width / 2) * TILE_SIZE;
-      const projectCenterY = (projectPos.gridY + project.height / 2) * TILE_SIZE;
+      // Calculate center points in grid coordinates
+      const agentCenter = {
+        x: agentPos.gridX + agent.width / 2,
+        y: agentPos.gridY + agent.height / 2,
+      };
+      const projectCenter = {
+        x: projectPos.gridX + project.width / 2,
+        y: projectPos.gridY + project.height / 2,
+      };
 
-      // Get sprite for belt segments
-      const hBeltSprite = spriteManager?.getSprite("belt-h");
-      const vBeltSprite = spriteManager?.getSprite("belt-v");
-
-      // Calculate path (L-shaped: horizontal then vertical)
-      const midX = projectCenterX;
-      const screenTileSize = TILE_SIZE * viewport.zoom;
-
-      // Draw horizontal segment from project to mid point
-      const startScreen = worldToScreen(projectCenterX, projectCenterY, viewport);
-      const midScreen = worldToScreen(midX, agentCenterY, viewport);
-      const endScreen = worldToScreen(agentCenterX, agentCenterY, viewport);
-
-      // Determine belt direction
-      const goingRight = agentCenterX > projectCenterX;
-      const goingDown = agentCenterY > projectCenterY;
-
-      if (hBeltSprite && vBeltSprite) {
-        // Draw belt segments using sprites
-        const hFrame = getAnimationFrame(hBeltSprite.idle, animationTime);
-        const vFrame = getAnimationFrame(vBeltSprite.idle, animationTime);
-
-        ctx.imageSmoothingEnabled = false;
-
-        // Vertical segment from project to corner
-        const vSegments = Math.abs(agentCenterY - projectCenterY) / TILE_SIZE;
-        for (let i = 0; i < vSegments; i++) {
-          const y = goingDown
-            ? projectCenterY + i * TILE_SIZE
-            : projectCenterY - (i + 1) * TILE_SIZE;
-          const screenPos = worldToScreen(projectCenterX - TILE_SIZE / 2, y, viewport);
-          ctx.drawImage(vFrame, screenPos.x, screenPos.y, screenTileSize, screenTileSize);
+      // Update obstacles with current drag positions
+      const currentObstacles = obstacles.map(obs => {
+        if (obs.entityId === agentId) {
+          return { ...obs, gridX: agentPos.gridX, gridY: agentPos.gridY };
         }
-
-        // Horizontal segment from corner to agent
-        const hSegments = Math.abs(agentCenterX - projectCenterX) / TILE_SIZE;
-        for (let i = 0; i < hSegments; i++) {
-          const x = goingRight
-            ? projectCenterX + i * TILE_SIZE
-            : projectCenterX - (i + 1) * TILE_SIZE;
-          const screenPos = worldToScreen(x, agentCenterY - TILE_SIZE / 2, viewport);
-          ctx.drawImage(hFrame, screenPos.x, screenPos.y, screenTileSize, screenTileSize);
+        if (obs.entityId === projectId) {
+          return { ...obs, gridX: projectPos.gridX, gridY: projectPos.gridY };
         }
-      } else {
-        // Fallback: draw simple lines
-        ctx.strokeStyle = "#666666";
-        ctx.lineWidth = 8 * viewport.zoom;
-        ctx.setLineDash([10 * viewport.zoom, 5 * viewport.zoom]);
+        return obs;
+      });
+      this.beltRouter.setObstacles(currentObstacles);
 
-        ctx.beginPath();
-        ctx.moveTo(startScreen.x, startScreen.y);
-        ctx.lineTo(startScreen.x, midScreen.y);
-        ctx.lineTo(endScreen.x, endScreen.y);
-        ctx.stroke();
+      const path = this.beltRouter.routeBelt(
+        projectId,
+        projectCenter,
+        agentId,
+        agentCenter
+      );
 
-        ctx.setLineDash([]);
-
-        // Draw animated items on belt
-        const beltLength = Math.abs(projectCenterY - agentCenterY) + Math.abs(agentCenterX - projectCenterX);
-        const itemProgress = (animationTime / 2000) % 1;
-        const itemDistance = itemProgress * beltLength;
-
-        // Determine item position on L-shaped path
-        const vLength = Math.abs(agentCenterY - projectCenterY);
-        const itemSize = 6 * viewport.zoom;
-
-        ctx.fillStyle = COLORS.machineGlow;
-
-        if (itemDistance < vLength) {
-          // Item on vertical segment
-          const itemY = goingDown
-            ? projectCenterY + itemDistance
-            : projectCenterY - itemDistance;
-          const itemScreen = worldToScreen(projectCenterX, itemY, viewport);
-          ctx.beginPath();
-          ctx.arc(itemScreen.x, itemScreen.y, itemSize, 0, Math.PI * 2);
-          ctx.fill();
-        } else {
-          // Item on horizontal segment
-          const hProgress = itemDistance - vLength;
-          const itemX = goingRight
-            ? projectCenterX + hProgress
-            : projectCenterX - hProgress;
-          const itemScreen = worldToScreen(itemX, agentCenterY, viewport);
-          ctx.beginPath();
-          ctx.arc(itemScreen.x, itemScreen.y, itemSize, 0, Math.PI * 2);
-          ctx.fill();
-        }
+      if (path) {
+        this.routedBelts.set(path.id, path);
       }
     }
+  }
+
+  private drawConveyorBelts(): void {
+    const { ctx, viewport, animationTime } = this;
+
+    // Update routes if needed
+    this.updateBeltRoutes();
+
+    const screenTileSize = TILE_SIZE * viewport.zoom;
+    ctx.imageSmoothingEnabled = false;
+
+    // Draw each belt path
+    for (const beltPath of this.routedBelts.values()) {
+      const segments = beltPath.segments;
+
+      if (segments.length === 0) continue;
+
+      // Draw each segment
+      for (const segment of segments) {
+        const sprite = this.getBeltSprite(segment.direction);
+
+        if (sprite) {
+          const frame = getAnimationFrame(sprite.idle, animationTime);
+          const screenPos = worldToScreen(
+            segment.gridX * TILE_SIZE,
+            segment.gridY * TILE_SIZE,
+            viewport
+          );
+          ctx.drawImage(frame, screenPos.x, screenPos.y, screenTileSize, screenTileSize);
+        } else {
+          // Fallback: draw colored rectangle
+          const screenPos = worldToScreen(
+            segment.gridX * TILE_SIZE,
+            segment.gridY * TILE_SIZE,
+            viewport
+          );
+          ctx.fillStyle = "#444444";
+          ctx.fillRect(screenPos.x + 4, screenPos.y + 4, screenTileSize - 8, screenTileSize - 8);
+        }
+      }
+
+      // Draw animated item on the belt path
+      this.drawBeltItem(beltPath, animationTime);
+    }
+  }
+
+  private getBeltSprite(direction: string) {
+    const { spriteManager } = this;
+    if (!spriteManager) return null;
+
+    switch (direction) {
+      case "horizontal":
+        return spriteManager.getSprite("belt-h");
+      case "vertical":
+        return spriteManager.getSprite("belt-v");
+      case "ne":
+        return spriteManager.getSprite("belt-ne");
+      case "nw":
+        return spriteManager.getSprite("belt-nw");
+      case "se":
+        return spriteManager.getSprite("belt-se");
+      case "sw":
+        return spriteManager.getSprite("belt-sw");
+      default:
+        return spriteManager.getSprite("belt-h");
+    }
+  }
+
+  private drawBeltItem(beltPath: BeltPath, animationTime: number): void {
+    const { ctx, viewport } = this;
+    const segments = beltPath.segments;
+
+    if (segments.length === 0) return;
+
+    // Calculate total path length and item position
+    const totalSegments = segments.length;
+    const itemProgress = (animationTime / 3000) % 1; // 3 seconds per loop
+    const currentSegmentFloat = itemProgress * totalSegments;
+    const currentSegmentIndex = Math.min(Math.floor(currentSegmentFloat), totalSegments - 1);
+    const segmentProgress = currentSegmentFloat - currentSegmentIndex;
+
+    const segment = segments[currentSegmentIndex];
+    const nextSegment = segments[currentSegmentIndex + 1];
+
+    // Interpolate position within segment
+    let itemX = segment.gridX + 0.5;
+    let itemY = segment.gridY + 0.5;
+
+    if (nextSegment) {
+      itemX = segment.gridX + 0.5 + (nextSegment.gridX - segment.gridX) * segmentProgress;
+      itemY = segment.gridY + 0.5 + (nextSegment.gridY - segment.gridY) * segmentProgress;
+    }
+
+    const screenPos = worldToScreen(itemX * TILE_SIZE, itemY * TILE_SIZE, viewport);
+    const itemSize = 8 * viewport.zoom;
+
+    // Draw glowing item
+    ctx.fillStyle = COLORS.machineGlow;
+    ctx.shadowColor = COLORS.machineGlow;
+    ctx.shadowBlur = 10 * viewport.zoom;
+    ctx.beginPath();
+    ctx.arc(screenPos.x, screenPos.y, itemSize, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
   }
 
   private pulseColor(color1: string, color2: string, time: number, period: number): string {

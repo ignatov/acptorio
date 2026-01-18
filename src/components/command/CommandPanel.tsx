@@ -175,7 +175,7 @@ export function CommandPanel() {
               onClick={handleSpawnAgent}
               disabled={!projectPath}
             >
-              Deploy Agent
+              Deploy
             </button>
             <button
               className="btn btn--primary"

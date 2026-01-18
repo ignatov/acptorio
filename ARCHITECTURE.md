@@ -1,6 +1,6 @@
-# Agent Commander - Architecture
+# acptorio - Architecture
 
-A StarCraft/C&C-inspired desktop application for orchestrating AI coding agents via the Agent Client Protocol (ACP).
+A Factorio-inspired desktop application for orchestrating AI coding agents via the Agent Client Protocol (ACP).
 
 ## Tech Stack
 
@@ -12,7 +12,7 @@ A StarCraft/C&C-inspired desktop application for orchestrating AI coding agents 
 ## Project Structure
 
 ```
-agent-commander/
+acptorio/
 ├── src/                          # React Frontend
 │   ├── App.tsx                   # Main application component
 │   ├── main.tsx                  # Entry point

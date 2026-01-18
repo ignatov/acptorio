@@ -3,7 +3,7 @@
 //! Run with: cargo test --test agent_process_test -- --nocapture
 //! Some tests require ANTHROPIC_API_KEY
 
-use agent_commander_lib::agent::{AgentProcess, AgentStatus, AgentUpdate, PendingPermissions};
+use acptorio_lib::agent::{AgentProcess, AgentStatus, AgentUpdate, PendingPermissions};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 

@@ -1,12 +1,12 @@
 [package]
-name = "agent-commander"
+name = "acptorio"
 version = "0.1.0"
-description = "RTS-Style Agent Management Application"
-authors = ["Agent Commander Team"]
+description = "Factorio-style ACP Agent Management"
+authors = ["acptorio"]
 edition = "2021"
 
 [lib]
-name = "agent_commander_lib"
+name = "acptorio_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

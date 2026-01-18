@@ -1,7 +1,30 @@
-# Tauri + React + Typescript
+# acptorio
 
-This template should help get you started developing with Tauri, React and Typescript in Vite.
+A Factorio-inspired desktop application for orchestrating AI coding agents via the Agent Client Protocol (ACP).
 
-## Recommended IDE Setup
+## Features
 
-- [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+- Factory-style visualization of agents and projects
+- Conveyor belt connections showing data flow
+- Deploy and manage multiple AI agents
+- Real-time status monitoring
+
+## Tech Stack
+
+- **Backend**: Tauri 2.0 (Rust)
+- **Frontend**: React + TypeScript + Vite
+- **State Management**: Zustand
+- **Agent Protocol**: ACP (Agent Client Protocol)
+
+## Development
+
+```bash
+npm install
+npm run tauri dev
+```
+
+## Build
+
+```bash
+npm run tauri build
+```

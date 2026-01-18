@@ -25,7 +25,7 @@ export function UnitPortraits() {
         {agentList.length === 0 ? (
           <div className="empty-state">
             <div className="empty-state__text">
-              No agents deployed. Click "Deploy Agent" to start.
+              No agents deployed. Click "Deploy" to start.
             </div>
           </div>
         ) : (
