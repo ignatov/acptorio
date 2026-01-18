@@ -82,6 +82,12 @@ export class FactorioRenderer {
   private routedBelts: Map<string, BeltPath> = new Map();
   private beltsDirty: boolean = true;
 
+  // Track working agents for belt animation
+  private workingAgentIds: Set<string> = new Set();
+
+  // Track responded input IDs to hide badges immediately
+  private respondedInputIds: Set<string> = new Set();
+
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
     const ctx = canvas.getContext("2d");
@@ -148,6 +154,14 @@ export class FactorioRenderer {
   setConnections(connections: Map<string, string>): void {
     this.connections = connections;
     this.beltsDirty = true;
+  }
+
+  setWorkingAgentIds(ids: Set<string>): void {
+    this.workingAgentIds = ids;
+  }
+
+  setRespondedInputIds(ids: Set<string>): void {
+    this.respondedInputIds = ids;
   }
 
   setDragPreview(entityId: string, gridX: number, gridY: number): void {
@@ -307,7 +321,7 @@ export class FactorioRenderer {
   }
 
   private drawAgentMachine(entity: AgentEntity, gridX: number, gridY: number): void {
-    const { ctx, viewport, selectedIds, hoveredId, animationTime, spriteManager } = this;
+    const { ctx, viewport, selectedIds, hoveredId, animationTime, spriteManager, respondedInputIds } = this;
     const { agent, width, height } = entity;
 
     const screenPos = worldToScreen(gridX * TILE_SIZE, gridY * TILE_SIZE, viewport);
@@ -316,7 +330,9 @@ export class FactorioRenderer {
 
     const isSelected = selectedIds.has(entity.id);
     const isHovered = hoveredId === entity.id;
-    const hasPendingInput = agent.pending_inputs.length > 0;
+    // Filter out responded inputs for badge display
+    const pendingInputs = agent.pending_inputs.filter(p => !respondedInputIds.has(p.id));
+    const hasPendingInput = pendingInputs.length > 0;
 
     // Try to use sprite if available
     const spriteSet = spriteManager?.getSprite("assembler");
@@ -447,7 +463,7 @@ export class FactorioRenderer {
       ctx.font = `bold ${12 * viewport.zoom}px sans-serif`;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      ctx.fillText(String(agent.pending_inputs.length), badgeX, badgeY);
+      ctx.fillText(String(pendingInputs.length), badgeX, badgeY);
     }
   }
 
@@ -640,7 +656,7 @@ export class FactorioRenderer {
   }
 
   private drawConveyorBelts(): void {
-    const { ctx, viewport, animationTime } = this;
+    const { ctx, viewport, animationTime, workingAgentIds } = this;
 
     // Update routes if needed
     this.updateBeltRoutes();
@@ -654,12 +670,17 @@ export class FactorioRenderer {
 
       if (segments.length === 0) continue;
 
+      // Check if the agent at the end of this belt is working
+      const isAgentWorking = workingAgentIds.has(beltPath.toEntityId);
+      // Use animation time only if agent is working, otherwise use 0 for static frame
+      const effectiveAnimTime = isAgentWorking ? animationTime : 0;
+
       // Draw each segment
       for (const segment of segments) {
         const sprite = this.getBeltSprite(segment.direction);
 
         if (sprite) {
-          const frame = getAnimationFrame(sprite.idle, animationTime);
+          const frame = getAnimationFrame(sprite.idle, effectiveAnimTime);
           const screenPos = worldToScreen(
             segment.gridX * TILE_SIZE,
             segment.gridY * TILE_SIZE,
@@ -678,8 +699,10 @@ export class FactorioRenderer {
         }
       }
 
-      // Draw animated item on the belt path
-      this.drawBeltItem(beltPath, animationTime);
+      // Draw animated item on the belt path only if agent is working
+      if (isAgentWorking) {
+        this.drawBeltItem(beltPath, animationTime);
+      }
     }
   }
 

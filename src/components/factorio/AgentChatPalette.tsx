@@ -6,9 +6,11 @@ import type { AgentInfo } from "../../types";
 interface AgentChatPaletteProps {
   agent: AgentInfo;
   onClose: () => void;
+  respondedInputIds: Set<string>;
+  onInputResponded: (inputId: string) => void;
 }
 
-export function AgentChatPalette({ agent, onClose }: AgentChatPaletteProps) {
+export function AgentChatPalette({ agent, onClose, respondedInputIds, onInputResponded }: AgentChatPaletteProps) {
   const [input, setInput] = useState("");
   const [isExecuting, setIsExecuting] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -27,10 +29,14 @@ export function AgentChatPalette({ agent, onClose }: AgentChatPaletteProps) {
     }
   }, [agentMessages.length]);
 
-  // Focus input on mount
+  // Focus input on mount and when agent changes
   useEffect(() => {
-    inputRef.current?.focus();
-  }, []);
+    // Use setTimeout to ensure focus happens after render cycle
+    const timeoutId = setTimeout(() => {
+      inputRef.current?.focus();
+    }, 50);
+    return () => clearTimeout(timeoutId);
+  }, [agent.id]);
 
   const handleSend = useCallback(async () => {
     if (!input.trim() || isExecuting) return;
@@ -60,6 +66,9 @@ export function AgentChatPalette({ agent, onClose }: AgentChatPaletteProps) {
   };
 
   const handlePermissionResponse = useCallback(async (inputId: string, approved: boolean) => {
+    // Immediately hide the input
+    onInputResponded(inputId);
+
     try {
       await invoke("respond_to_permission", {
         agentId: agent.id,
@@ -70,7 +79,7 @@ export function AgentChatPalette({ agent, onClose }: AgentChatPaletteProps) {
     } catch (error) {
       console.error("Failed to respond to permission:", error);
     }
-  }, [agent.id]);
+  }, [agent.id, onInputResponded]);
 
   const getInputTypeLabel = (type: string): string => {
     switch (type) {
@@ -118,9 +127,9 @@ export function AgentChatPalette({ agent, onClose }: AgentChatPaletteProps) {
       </div>
 
       {/* Pending Inputs Section */}
-      {agent.pending_inputs && agent.pending_inputs.length > 0 && (
+      {agent.pending_inputs && agent.pending_inputs.filter(p => !respondedInputIds.has(p.id)).length > 0 && (
         <div className="agent-chat-palette__pending">
-          {agent.pending_inputs.map((pendingInput) => (
+          {agent.pending_inputs.filter(p => !respondedInputIds.has(p.id)).map((pendingInput) => (
             <div key={pendingInput.id} className="agent-chat-palette__pending-item">
               <div className="agent-chat-palette__pending-label">
                 {getInputTypeLabel(pendingInput.input_type)}

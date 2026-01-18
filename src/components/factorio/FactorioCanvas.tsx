@@ -56,6 +56,7 @@ export function FactorioCanvas() {
   const [selectionBox, setSelectionBox] = useState<SelectionBox | null>(null);
   const [showDeployDialog, setShowDeployDialog] = useState(false);
   const [isDeploying, setIsDeploying] = useState(false);
+  const [respondedInputIds, setRespondedInputIds] = useState<Set<string>>(new Set());
 
   const viewport = useUIStore((s) => s.factorioViewport);
   const setFactorioViewport = useUIStore((s) => s.setFactorioViewport);
@@ -223,12 +224,16 @@ export function FactorioCanvas() {
       // Place the agent near the project and persist metadata
       const agentPos = findNextAvailablePosition({ x: project.grid_x, y: project.grid_y });
       setAgentPlacement(agent.id, agentPos.x, agentPos.y, projectId, agentName, project.path);
+
+      // Select the new agent to open its chat window
+      setSelectedProjectIds(new Set());
+      selectAgent(agent.id, false);
     } catch (error) {
       console.error("Failed to deploy agent:", error);
     } finally {
       setIsDeploying(false);
     }
-  }, [projects, spawnAgent, findNextAvailablePosition, setAgentPlacement]);
+  }, [projects, spawnAgent, findNextAvailablePosition, setAgentPlacement, selectAgent]);
 
   // Keyboard handler for delete, select all, and WASD navigation
   useEffect(() => {
@@ -416,7 +421,19 @@ export function FactorioCanvas() {
       }
     }
     renderer.setConnections(connections);
-  }, [agents, selectedAgentIds, selectedProjectIds, projects, agentPlacements, isLoaded, getAgentPlacement, findNextAvailablePosition, setAgentPlacement]);
+
+    // Build set of working agent IDs for belt animation
+    const workingAgentIds = new Set<string>();
+    for (const agent of agents.values()) {
+      if (agent.status === "working") {
+        workingAgentIds.add(agent.id);
+      }
+    }
+    renderer.setWorkingAgentIds(workingAgentIds);
+
+    // Pass responded input IDs for badge display
+    renderer.setRespondedInputIds(respondedInputIds);
+  }, [agents, selectedAgentIds, selectedProjectIds, projects, agentPlacements, isLoaded, getAgentPlacement, findNextAvailablePosition, setAgentPlacement, respondedInputIds]);
 
   // Handle adding a project via dialog
   const handleAddProject = useCallback(async (worldX: number, worldY: number) => {
@@ -870,6 +887,8 @@ export function FactorioCanvas() {
           <AgentChatPalette
             agent={selectedAgent}
             onClose={clearSelection}
+            respondedInputIds={respondedInputIds}
+            onInputResponded={(inputId) => setRespondedInputIds(prev => new Set(prev).add(inputId))}
           />
         )}
       </div>
