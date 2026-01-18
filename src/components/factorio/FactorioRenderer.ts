@@ -356,6 +356,14 @@ export class FactorioRenderer {
       ctx.imageSmoothingEnabled = false; // Pixel art should be crisp
       ctx.drawImage(frame, screenPos.x, screenPos.y, screenWidth, screenHeight);
 
+      // Draw blinking red overlay when permission is needed (Factorio "no fuel" style)
+      if (hasPendingInput) {
+        const blinkPhase = Math.sin(animationTime / 300) * 0.5 + 0.5; // 0 to 1, ~1.6Hz blink
+        const overlayAlpha = blinkPhase * 0.4; // Max 40% opacity
+        ctx.fillStyle = `rgba(255, 60, 60, ${overlayAlpha})`;
+        ctx.fillRect(screenPos.x, screenPos.y, screenWidth, screenHeight);
+      }
+
       // Draw selection/hover border (Factorio yellow style)
       if (isSelected || isHovered) {
         ctx.strokeStyle = isSelected ? COLORS.machineBorderSelected : COLORS.machineBorder;
